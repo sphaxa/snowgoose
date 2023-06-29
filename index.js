@@ -2,6 +2,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { Client, Collection, Events, GatewayIntentBits } = require('discord.js');
 //require('dotenv').config()
+const express = require("express")
+const app = express()
 
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 
@@ -45,6 +47,18 @@ client.on(Events.InteractionCreate, async interaction => {
 		}
 	}
 });
+
+// use the express-static middleware
+app.use(express.static("public"))
+
+// define the first route
+app.get("/", function (req, res) {
+  res.send("<h1>Hello World!</h1>")
+})
+
+// start the server listening for requests
+app.listen(process.env.PORT || 3000, 
+	() => console.log("Server is running..."));
 
 client.once(Events.ClientReady, c => {
 	console.log(`Ready! Logged in as ${c.user.tag}`);
