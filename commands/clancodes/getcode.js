@@ -13,9 +13,10 @@ module.exports = {
 
 async function checkIfValid(snowflake) {
 	try {
-		const res = await db.pool.query("SELECT COUNT(*) FROM codes WHERE takenby = $1", [snowflake]);
-        if (res.rows[0].count > 0) {
-            return 'You have already claimed an invite code, contact sphaxa if you are having problems.';
+		const res = await db.pool.query("SELECT * FROM codes WHERE takenby = $1", [snowflake]);
+        if (res.rows.length > 0) {
+            return `Here is your code: ${res.rows[0].code}
+            If you are having issues, put a message in <#219605771963334658>`;
         } else {
             return await claimCode(snowflake);
         }
@@ -30,7 +31,8 @@ async function claimCode(snowflake) {
 		const res = await db.pool.query("UPDATE codes SET takenby = $1 WHERE CTID IN (SELECT CTID FROM codes WHERE takenby IS NULL LIMIT 1) RETURNING *;", [snowflake]);
         if (res.rows != null) {
             if (res.rows.length > 0) {
-                return `Here is your code: ${res.rows[0].code}`;
+                return `Here is your code: ${res.rows[0].code}
+                If you are having issues, put a message in <#219605771963334658>`;
             }
             else {
                 return 'There are no more codes available, contact sphaxa to add more.';
