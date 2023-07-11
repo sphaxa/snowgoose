@@ -4,13 +4,13 @@ var db = require(appRoot + '/database.js');
 
 module.exports = {
 	data: new SlashCommandBuilder()
-		.setName('addcode')
-		.setDescription('Add an invite code to the bank.')
+		.setName('viewcode')
+		.setDescription('View information about a code.')
         .addStringOption(option =>
 			option
 				.setName('code')
                 .setRequired(true)
-				.setDescription('The code you want to add to the bank.'))
+				.setDescription('The code you want to get info of.'))
         .setDefaultMemberPermissions(PermissionFlagsBits.BanMembers),
 	async execute(interaction) {
         const code = interaction.options.getString('code');
@@ -25,6 +25,6 @@ async function addCode(code) {
         return "Code added to bank."
 	} catch (error) {
 		console.error(error);
-        return "Something went wrong trying to add this code, make sure it's not a duplicate (Use /viewcode).";
+        return "Something went wrong while trying to get info for this code.";
 	}
 }

@@ -1,5 +1,6 @@
 const { SlashCommandBuilder, PermissionFlagsBits } = require('discord.js');
-const db = require('./database.js');
+var appRoot = require('app-root-path');
+var db = require(appRoot + '/database.js');
 
 module.exports = {
 	data: new SlashCommandBuilder()
