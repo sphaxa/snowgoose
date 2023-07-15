@@ -1,7 +1,7 @@
 const { ActionRowBuilder, StringSelectMenuBuilder, StringSelectMenuOptionBuilder, SlashCommandBuilder, ComponentType } = require('discord.js')
 const pronouns = require('./pronounlist.json')
 
-console.log('Building pronouns list...')
+console.log('[PRONOUN COMMAND PRE-LOAD] Building pronouns list...')
 const pronounslist = []
 pronouns.forEach(p => {
   pronounslist.push(new StringSelectMenuOptionBuilder()
