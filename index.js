@@ -52,7 +52,7 @@ client.on(Events.InteractionCreate, async interaction => {
 app.use(express.static("public"))
 
 app.get("/", function (req, res) {
-  res.send("<h1>Hello World!</h1>")
+  res.send("i am a discord bot, not a website. go away.");
 })
 
 app.listen(process.env.PORT || 3000, 
