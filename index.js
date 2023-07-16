@@ -1,7 +1,7 @@
 const fs = require('node:fs')
 const path = require('node:path')
 const { Client, Collection, Events, GatewayIntentBits } = require('discord.js')
-// require('dotenv').config()
+require('dotenv').config()
 const express = require('express')
 const app = express()
 
