@@ -29,7 +29,7 @@ async function checkIfValid (snowflake) {
 
 async function claimCode (snowflake) {
   try {
-    const res = await db.pool.query('UPDATE skin_codes SET takenby = $1 WHERE CTID IN (SELECT CTID FROM codes WHERE takenby IS NULL LIMIT 1) RETURNING *;', [snowflake])
+    const res = await db.pool.query('UPDATE skin_codes SET takenby = $1 WHERE CTID IN (SELECT CTID FROM skin_codes WHERE takenby IS NULL LIMIT 1) RETURNING *;', [snowflake])
     if (res.rows != null) {
       if (res.rows.length > 0) {
         return `Here is your code: ${res.rows[0].code}
