@@ -49,16 +49,6 @@ client.on(Events.InteractionCreate, async interaction => {
   }
 })
 
-// Please ignore the webserver crap I am totally not scamming heroku with this.
-app.use(express.static('public'))
-
-app.get('/', function (req, res) {
-  res.send('i am a discord bot, not a website. go away.')
-})
-
-app.listen(process.env.PORT || 3000,
-  () => console.log('[WEBSERVER] Server is running...'))
-
 client.once(Events.ClientReady, c => {
   console.log(`[DISCORD CLIENT] Ready! Logged in as ${c.user.tag}`)
   console.log('[MODULE RUNNER] Starting modules...')
