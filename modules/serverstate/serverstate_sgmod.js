@@ -11,8 +11,12 @@ module.exports = {
 
     // Mapping channels to their associated IP addresses, ports, and passwords
     const channelServers = {
-      '1233652486628315146': { ip: '121.127.40.182', port: 25057, password: 'Cr341KvDq' },
-      '976588511081799750': { ip: '192.168.1.11', port: 27016, password: 'password2' },
+      '1233652486628315146': { ip: '10.6.1.98', port: 27015, password: 'Fr@g@dm1n' },
+      '976588511081799750': { ip: '10.6.1.98', port: 27016, password: 'Fr@g@dm1n' },
+      '976588551582003220': { ip: '10.6.1.98', port: 27017, password: 'Fr@g@dm1n' },
+      '976588615993917490': { ip: '10.5.11.156', port: 27015, password: 'Fr@g@dm1n' },
+      '976588769639682088': { ip: '10.5.11.156', port: 27016, password: 'Fr@g@dm1n' },
+      '997558408410562671': { ip: '10.5.11.156', port: 27017, password: 'Fr@g@dm1n' },
     };
 
     async function sendRconCommand(server, command) {
