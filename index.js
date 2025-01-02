@@ -22,11 +22,12 @@ for (const folder of moduleFolders) {
   for (const file of commandFiles) {
     const filePath = path.join(modulesPath, file)
     const module = require(filePath)
-    if ('data' in module && 'execute' in module) {
+    if ('data' in module && 'execute' in module && 'meta' in module) {
+      if (!module.meta.enabled) continue;
       client.commands.set(module.data.name, module)
-      console.log(`[COMMAND LOADER] Loaded command: ${module.data.name}`)
+      console.log(`[COMMAND LOADER] Loaded command: ${module.meta.name}`)
     } else {
-      console.log(`[COMMAND LOADER] The command at ${filePath} is missing a required "data" or "execute" property.`)
+      console.log(`[COMMAND LOADER] The command at ${filePath} is missing a required "data", "meta", or "execute" property.`)
     }
   }
 }
@@ -57,7 +58,7 @@ client.on(Events.InteractionCreate, async interaction => {
 app.use(express.static('public'))
 
 app.get('/', function (req, res) {
-  res.send('i am a discord bot, not a website. go away.')
+  res.send('snowgoose.')
 })
 
 app.listen(process.env.PORT || 3000,
@@ -72,12 +73,13 @@ client.once(Events.ClientReady, c => {
     for (const file of moduleFiles) {
       const filePath = path.join(modulesPath, file)
       const module = require(filePath)
-      if ('data' in module) {
-        console.log(`[MODULE LOADER] Loaded module: ${module.data.name}`)
+      if ('data' in module && 'execute' in module && 'meta' in module) {
+        if (!module.meta.enabled) continue;
+        console.log(`[MODULE LOADER] Loaded module: ${module.meta.name}`)
         module.execute(client)
-        console.log(`[MODULE LOADER] Started module: ${module.data.name}`)
+        console.log(`[MODULE LOADER] Started module: ${module.meta.name}`)
       } else {
-        console.log(`[MODULE LOADER] The module at ${filePath} is missing a required "data" or "execute" property (The module is already loaded, so it will crash).`)
+        console.log(`[MODULE LOADER] The module at ${filePath} is missing a required "data", "meta", or "execute" property (The module is already loaded, so it will crash).`)
       }
     }
   }

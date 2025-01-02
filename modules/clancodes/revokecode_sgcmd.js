@@ -3,6 +3,10 @@ const appRoot = require('app-root-path')
 const db = require(appRoot + '/database.js')
 
 module.exports = {
+  meta: {
+    name: "Revoke Clan Code",
+    enabled: false
+  },
   data: new SlashCommandBuilder()
     .setName('revokecode')
     .setDescription('Revoke an invite code from a user.')

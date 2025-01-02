@@ -10,6 +10,10 @@ pronouns.forEach(p => {
 })
 
 module.exports = {
+  meta: {
+    name: "Set Pronouns",
+    enabled: false
+  },
   data: new SlashCommandBuilder()
     .setName('pronouns')
     .setDescription('Allows you to set your pronouns.'),

@@ -1,8 +1,9 @@
 const { Rcon } = require('rcon-client');
 
 module.exports = {
-  data: {
-    name: 'serverstate'
+  meta: {
+    name: "Serverstate v1",
+    enabled: true
   },
   async execute(client) {
     console.log('[SERVERSTATE MODULE] Listening for webhook and real user messages...');

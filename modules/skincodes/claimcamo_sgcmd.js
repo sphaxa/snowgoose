@@ -3,9 +3,13 @@ const appRoot = require('app-root-path')
 const db = require(appRoot + '/database.js')
 
 module.exports = {
+  meta: {
+    name: "Claim Code",
+    enabled: false
+  },
   data: new SlashCommandBuilder()
-    .setName('getcode')
-    .setDescription('Get an invite code to fl0ms BattleBit clan.'),
+    .setName('claimcamo')
+    .setDescription('Claim a fl0m M4A1 code for Battlebit.'),
   async execute (interaction) {
     const msg = await checkIfValid(interaction.user.id)
     await interaction.reply({ content: msg, ephemeral: true })
@@ -14,7 +18,7 @@ module.exports = {
 
 async function checkIfValid (snowflake) {
   try {
-    const res = await db.pool.query('SELECT * FROM codes WHERE takenby = $1', [snowflake])
+    const res = await db.pool.query('SELECT * FROM skin_codes WHERE takenby = $1', [snowflake])
     if (res.rows.length > 0) {
       return `Here is your code: ${res.rows[0].code}
             If you are having issues, put a message in <#219605771963334658>`
@@ -29,16 +33,16 @@ async function checkIfValid (snowflake) {
 
 async function claimCode (snowflake) {
   try {
-    const res = await db.pool.query('UPDATE codes SET takenby = $1 WHERE CTID IN (SELECT CTID FROM codes WHERE takenby IS NULL LIMIT 1) RETURNING *;', [snowflake])
+    const res = await db.pool.query('UPDATE skin_codes SET takenby = $1 WHERE CTID IN (SELECT CTID FROM skin_codes WHERE takenby IS NULL LIMIT 1) RETURNING *;', [snowflake])
     if (res.rows != null) {
       if (res.rows.length > 0) {
         return `Here is your code: ${res.rows[0].code}
                 If you are having issues, put a message in <#219605771963334658>`
       } else {
-        return 'There are no more codes available, contact sphaxa to add more.'
+        return 'We are currently out of fl0m camo skin codes.'
       }
     } else {
-      return 'There are no more codes available, contact sphaxa to add more.'
+      return 'We are currently out of fl0m camo skin codes.'
     }
   } catch (error) {
     console.error(error)

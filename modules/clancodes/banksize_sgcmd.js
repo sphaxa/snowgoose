@@ -3,6 +3,10 @@ const appRoot = require('app-root-path')
 const db = require(appRoot + '/database.js')
 
 module.exports = {
+  meta: {
+    name: "Get Bank Size",
+    enabled: false
+  },
   data: new SlashCommandBuilder()
     .setName('banksize')
     .setDescription('Shows how many codes are in the bank.'),

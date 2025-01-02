@@ -1,6 +1,7 @@
 module.exports = {
-  data: {
-    name: 'twitchclips'
+  meta: {
+    name: "Twitch Clips",
+    enabled: false
   },
   async execute (client) {
     console.log('[TWITCHCLIPS MODULE] Coming soon...')
