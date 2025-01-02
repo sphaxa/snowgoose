@@ -1,4 +1,4 @@
-const { Rcon } = require('rcon-client'); // Import RCON client
+const { Rcon } = require('rcon-client');
 
 module.exports = {
   data: {
