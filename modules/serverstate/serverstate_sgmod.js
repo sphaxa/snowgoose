@@ -5,6 +5,7 @@ module.exports = {
     name: "Serverstate v1",
     enabled: true
   },
+  data: {},
   async execute(client) {
     console.log('[SERVERSTATE MODULE] Listening for webhook and real user messages...');
 
