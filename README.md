@@ -1,7 +1,7 @@
 # snowgoose 
-### a discord bot, for fl0m
+### a modular discord bot
 ----------
-**snowgoose requres a postgres db to work**
+**if you want to use a module that requires a DB, then youll need a postgres DB**
 
 you'll need to uncomment the dotenv imports if you want to use dotenv, heres an example:
 ```
