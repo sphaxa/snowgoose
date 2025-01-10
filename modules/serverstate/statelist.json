@@ -1,0 +1,9 @@
+[
+    {
+        "name": "Example Server",
+        "channelId": 7564838384922255,
+        "rconPort": 27015,
+        "rconAddress": "127.0.0.1",
+        "rconPassword": "zzz"
+    }
+]
