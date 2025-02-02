@@ -39,7 +39,9 @@ module.exports = {
           console.error(`[SERVERSTATE MODULE] Failed to connect to ${server.ip}:${server.port}.`);
           const channel = await client.channels.fetch(channelId);
           const category = await client.channels.fetch(channel.parentId);
-          updateCategory(category, "🔴 " + server.name + ": OFFLINE");
+          if (!category.name.startsWith("🔴")) {
+            updateCategory(category, "🔴 " + server.name + ": OFFLINE");
+          }
         }
       }
     }
@@ -83,10 +85,8 @@ module.exports = {
       }
     }
 
-    client.once('ready', async () => {
-      await resetAllCategories();
-      console.log('[SERVERSTATE MODULE] All matchroom categories set to "UNBOUND".');
-    });
+    await resetAllCategories();
+    console.log('[SERVERSTATE MODULE] All matchroom categories set to "UNBOUND".');
 
     client.on('messageCreate', async (message) => {
       if (message.webhookId && hardcodedChannelIds.includes(message.channel.id)) {
