@@ -54,7 +54,6 @@ client.on(Events.InteractionCreate, async interaction => {
   }
 })
 
-// Please ignore the webserver crap I am totally not scamming heroku with this.
 app.use(express.static('public'))
 
 app.get('/', function (req, res) {
