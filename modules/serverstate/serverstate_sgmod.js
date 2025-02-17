@@ -1,6 +1,7 @@
 require('dotenv').config();
 const { Rcon } = require('rcon-client');
 const axios = require('axios');
+const express = require('express');
 
 module.exports = {
   meta: {
@@ -13,6 +14,8 @@ module.exports = {
 
     let channelServers = {};
     let hardcodedChannelIds = [];
+    const app = express();
+    app.use(express.json());
 
     async function fetchServerData() {
       try {
@@ -24,7 +27,12 @@ module.exports = {
 
         channelServers = servers.reduce((acc, server) => {
           const [ip, port] = server.address.split(':');
-          acc[server.matchroomId] = { name: server.name, ip, port: parseInt(port), password: server.rconPassword };
+          acc[`${ip}:${port}`] = { 
+            name: server.name, 
+            ip, 
+            port: parseInt(port), 
+            password: server.rconPassword 
+          };
           return acc;
         }, {});
 
@@ -44,23 +52,53 @@ module.exports = {
         const response = await rcon.send(command);
         await rcon.end();
         console.log(`[RCON] Response from ${server.ip}:${server.port}:`, response);
-        return true;
+        return response;
       } catch (error) {
         console.error(`[RCON] Error sending command to ${server.ip}:${server.port}:`, error);
-        return false;
+        return null;
       }
     }
 
-    async function updateCategory(categoryChannel, newCategoryName) {
-      if (categoryChannel && categoryChannel.type === 4) {
-        try {
-          await categoryChannel.setName(newCategoryName);
-          console.log(`[SERVERSTATE MODULE] Category name updated to: ${newCategoryName}`);
-        } catch (error) {
-          console.error('[SERVERSTATE MODULE] Error updating category name:', error);
-        }
+    // **Middleware for API Key Authentication**
+    function authenticateApiKey(req, res, next) {
+      const requestApiKey = req.headers['x-api-key'];
+
+      if (!requestApiKey || requestApiKey !== process.env.API_KEY) {
+        return res.status(401).json({ error: 'Unauthorized: Invalid API Key' });
       }
+
+      next();
     }
+
+    // **Expose an RCON API Endpoint with API Key Protection**
+    app.post('/rcon', authenticateApiKey, async (req, res) => {
+      const { ip, port, command } = req.body;
+
+      if (!ip || !port || !command) {
+        return res.status(400).json({ error: 'Missing required parameters: ip, port, or command' });
+      }
+
+      const serverKey = `${ip}:${port}`;
+      const server = channelServers[serverKey];
+
+      if (!server) {
+        return res.status(404).json({ error: 'Server not found for the provided IP and port' });
+      }
+
+      console.log(`[SERVERSTATE MODULE] Received RCON request for ${server.ip}:${server.port} -> ${command}`);
+
+      const response = await sendRconCommand(server, command);
+
+      if (response) {
+        return res.json({ success: true, response });
+      } else {
+        return res.status(500).json({ success: false, error: 'Failed to execute RCON command' });
+      }
+    });
+
+    app.listen(3001, () => {
+      console.log('[SERVERSTATE MODULE] RCON API listening on port 3001 (Protected)');
+    });
 
     client.on('messageCreate', async (message) => {
       if (message.webhookId && hardcodedChannelIds.includes(message.channel.id)) {
