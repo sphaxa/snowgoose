@@ -1,7 +1,9 @@
+const https = require('https');
+const fs = require('fs');
+const express = require('express');
 require('dotenv').config();
 const { Rcon } = require('rcon-client');
 const axios = require('axios');
-const express = require('express');
 
 module.exports = {
   meta: {
@@ -16,6 +18,12 @@ module.exports = {
     let hardcodedChannelIds = [];
     const app = express();
     app.use(express.json());
+
+    // **Load PFX Certificate**
+    const options = {
+      pfx: fs.readFileSync('C:/certs/mycert.pfx'),
+      passphrase: process.env.CERT_PASSWORD // Use the password from .env or hardcode it if necessary
+    };
 
     async function fetchServerData() {
       try {
@@ -96,8 +104,9 @@ module.exports = {
       }
     });
 
-    app.listen(3001, () => {
-      console.log('[SERVERSTATE MODULE] RCON API listening on port 3001 (Protected)');
+    // **Start HTTPS Server with PFX Certificate**
+    https.createServer(options, app).listen(3001, () => {
+      console.log('[SERVERSTATE MODULE] HTTPS RCON API listening on port 3001 (Protected)');
     });
 
     client.on('messageCreate', async (message) => {
