@@ -21,8 +21,9 @@ module.exports = {
 
     // **Load PFX Certificate**
     const options = {
-      pfx: fs.readFileSync('C:/certs/mycert.pfx'),
-      passphrase: process.env.CERT_PASSWORD // Use the password from .env or hardcode it if necessary
+      pfx: fs.readFileSync('C:/certs/mycert_fullchain.pfx'),
+      requestCert: false,
+      passphrase: "root"
     };
 
     async function fetchServerData() {
@@ -105,7 +106,7 @@ module.exports = {
     });
 
     // **Start HTTPS Server with PFX Certificate**
-    https.createServer(options, app).listen(3001, () => {
+    https.createServer(options, app).listen(3001, '0.0.0.0', () => {
       console.log('[SERVERSTATE MODULE] HTTPS RCON API listening on port 3001 (Protected)');
     });
 
