@@ -96,7 +96,12 @@ module.exports = {
 
       console.log(`[SERVERSTATE MODULE] Received RCON request for ${server.ip}:${server.port} -> ${command}`);
 
-      const response = await sendRconCommand(server, command);
+      var response = await sendRconCommand(server, command);
+
+      if (response === "")
+      {
+        response = "No Message";
+      }
 
       if (response) {
         return res.json({ success: true, response });
