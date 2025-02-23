@@ -16,6 +16,7 @@ module.exports = {
 
     let channelServers = {};
     let hardcodedChannelIds = [];
+    let publicChannelIds = []; // New array for channels using PublicChannelId
     const app = express();
     app.use(express.json());
 
@@ -44,7 +45,9 @@ module.exports = {
           return acc;
         }, {});
 
+        // These arrays now store the channel IDs for the two types of channels
         hardcodedChannelIds = servers.map(server => server.matchroomId);
+        publicChannelIds = servers.map(server => server.PublicChannelId);
 
         console.log('[SERVERSTATE MODULE] Successfully fetched server data.');
       } catch (error) {
@@ -110,29 +113,41 @@ module.exports = {
     });
 
     client.on('messageCreate', async (message) => {
+      // Handle webhook messages in matchroom channels (update category name)
       if (message.webhookId && hardcodedChannelIds.includes(message.channel.id)) {
         const content = message.content;
-
         if (content.startsWith('sg_relay&hostname')) {
           const newCategoryName = content.split('sg_relay&hostname')[1].trim();
-
           if (newCategoryName) {
             const categoryChannel = message.channel.parent;
-            updateCategory(categoryChannel, '🟢 ' + newCategoryName);
+            // Assumes updateCategory is defined elsewhere to update the category's name
+            updateCategory(categoryChannel, newCategoryName);
           }
         }
       }
 
+      // Handle webhook messages in public channels (update channel name)
+      if (message.webhookId && publicChannelIds.includes(message.channel.id)) {
+        const content = message.content;
+        if (content.startsWith('sg_relay&hostname')) {
+          const newChannelName = content.split('sg_relay&hostname')[1].trim();
+          if (newChannelName) {
+            message.channel.setName(newChannelName)
+              .then(updated => console.log(`[SERVERSTATE MODULE] Updated channel name to ${updated.name}`))
+              .catch(error => console.error('[SERVERSTATE MODULE] Failed to update channel name:', error));
+          }
+        }
+      }
+
+      // Handle user messages in matchroom channels to send RCON commands
       if (!message.webhookId && hardcodedChannelIds.includes(message.channel.id)) {
         const channelId = message.channel.id;
         const userMessage = message.content;
+        // Note: Adjust the key mapping if necessary. Currently, channelServers keys are based on ip:port.
         const server = channelServers[channelId];
-
         if (server) {
           console.log(`[SERVERSTATE MODULE] Sending RCON command to ${server.ip}:${server.port}: ${userMessage}`);
-
           const success = await sendRconCommand(server, "relay_fbws_speak " + userMessage);
-
           if (success) {
             await message.react('✅');
           } else {
