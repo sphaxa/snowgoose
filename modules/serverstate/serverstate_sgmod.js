@@ -14,7 +14,11 @@ module.exports = {
   async execute(client) {
     console.log('[SERVERSTATE MODULE] Fetching server data from API...');
 
+    // Map for message handling (keyed by channel ID)
     let channelServers = {};
+    // Map for the RCON endpoint (keyed by ip:port)
+    let serverAddressMap = {};
+
     let hardcodedChannelIds = [];
     let publicChannelIds = []; // New array for channels using PublicChannelId
     const app = express();
@@ -35,20 +39,24 @@ module.exports = {
 
         const servers = response.data;
 
-        channelServers = servers.reduce((acc, server) => {
+        servers.forEach(server => {
           const [ip, port] = server.address.split(':');
-          acc[`${ip}:${port}`] = { 
+          const serverData = { 
             name: server.name, 
             ip, 
             port: parseInt(port), 
             password: server.rconPassword 
           };
-          return acc;
-        }, {});
+
+          // Use matchroomId as the key for channelServers (for message handling)
+          channelServers[server.matchroomId] = serverData;
+          // Also store the server data by ip:port for the RCON API
+          serverAddressMap[`${ip}:${port}`] = serverData;
+        });
 
         // These arrays now store the channel IDs for the two types of channels
         hardcodedChannelIds = servers.map(server => server.matchroomId);
-        publicChannelIds = servers.map(server => server.publicChannelId);
+        publicChannelIds = servers.map(server => server.PublicChannelId);
 
         console.log('[SERVERSTATE MODULE] Successfully fetched server data.');
       } catch (error) {
@@ -91,7 +99,7 @@ module.exports = {
       }
 
       const serverKey = `${ip}:${port}`;
-      const server = channelServers[serverKey];
+      const server = serverAddressMap[serverKey];
 
       if (!server) {
         return res.status(404).json({ error: 'Server not found for the provided IP and port' });
@@ -99,15 +107,14 @@ module.exports = {
 
       console.log(`[SERVERSTATE MODULE] Received RCON request for ${server.ip}:${server.port} -> ${command}`);
 
-      var response = await sendRconCommand(server, command);
+      let responseData = await sendRconCommand(server, command);
 
-      if (response === "")
-      {
-        response = "No Message";
+      if (responseData === "") {
+        responseData = "No Message";
       }
 
-      if (response) {
-        return res.json({ success: true, response });
+      if (responseData) {
+        return res.json({ success: true, response: responseData });
       } else {
         return res.status(500).json({ success: false, error: 'Failed to execute RCON command' });
       }
@@ -137,7 +144,6 @@ module.exports = {
           const newCategoryName = content.split('sg_relay&hostname')[1].trim();
           if (newCategoryName) {
             const categoryChannel = message.channel.parent;
-            // Assumes updateCategory is defined elsewhere to update the category's name
             updateCategory(categoryChannel, newCategoryName);
           }
         }
@@ -160,7 +166,7 @@ module.exports = {
       if (!message.webhookId && hardcodedChannelIds.includes(message.channel.id)) {
         const channelId = message.channel.id;
         const userMessage = message.content;
-        // Note: Adjust the key mapping if necessary. Currently, channelServers keys are based on ip:port.
+        // Use the channelServers mapping keyed by channel id
         const server = channelServers[channelId];
         if (server) {
           console.log(`[SERVERSTATE MODULE] Sending RCON command to ${server.ip}:${server.port}: ${userMessage}`);
