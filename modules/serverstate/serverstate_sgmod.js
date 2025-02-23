@@ -113,6 +113,17 @@ module.exports = {
       }
     });
 
+    async function updateCategory(categoryChannel, newCategoryName) {
+      if (categoryChannel && categoryChannel.type === 4) {
+        try {
+          await categoryChannel.setName(newCategoryName);
+          console.log(`[SERVERSTATE MODULE] Category name updated to: ${newCategoryName}`);
+        } catch (error) {
+          console.error('[SERVERSTATE MODULE] Error updating category name:', error);
+        }
+      }
+    }
+
     // **Start HTTPS Server with PFX Certificate**
     https.createServer(options, app).listen(3001, '0.0.0.0', () => {
       console.log('[SERVERSTATE MODULE] HTTPS RCON API listening on port 3001 (Protected)');
