@@ -56,7 +56,7 @@ module.exports = {
 
         // These arrays now store the channel IDs for the two types of channels
         hardcodedChannelIds = servers.map(server => server.matchroomId);
-        publicChannelIds = servers.map(server => server.PublicChannelId);
+        publicChannelIds = servers.map(server => server.publicChannelId);
 
         console.log('[SERVERSTATE MODULE] Successfully fetched server data.');
       } catch (error) {
@@ -148,7 +148,6 @@ module.exports = {
           }
         }
       }
-
       // Handle webhook messages in public channels (update channel name)
       if (message.webhookId && publicChannelIds.includes(message.channel.id)) {
         const content = message.content;
@@ -170,8 +169,8 @@ module.exports = {
         const server = channelServers[channelId];
         if (server) {
           console.log(`[SERVERSTATE MODULE] Sending RCON command to ${server.ip}:${server.port}: ${userMessage}`);
-          const success = await sendRconCommand(server, "relay_fbws_speak " + userMessage);
-          if (success) {
+          const response = await sendRconCommand(server, "relay_fbws_speak " + userMessage);
+          if (response != null) {
             await message.react('✅');
           } else {
             await message.react('❌');
