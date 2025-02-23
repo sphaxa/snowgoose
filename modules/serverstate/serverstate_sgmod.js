@@ -48,7 +48,7 @@ module.exports = {
 
         // These arrays now store the channel IDs for the two types of channels
         hardcodedChannelIds = servers.map(server => server.matchroomId);
-        publicChannelIds = servers.map(server => server.PublicChannelId);
+        publicChannelIds = servers.map(server => server.publicChannelId);
 
         console.log('[SERVERSTATE MODULE] Successfully fetched server data.');
       } catch (error) {
