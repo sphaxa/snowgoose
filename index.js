@@ -32,6 +32,15 @@ for (const folder of moduleFolders) {
   }
 }
 
+process.on('uncaughtException', (error) => {
+  console.error('[SNOWGOOSE] Uncaught Exception:', error);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('[SNOWGOOSE] Unhandled Promise Rejection:', reason);
+});
+
+
 client.on(Events.InteractionCreate, async interaction => {
   if (!interaction.isChatInputCommand()) return
 

@@ -67,17 +67,33 @@ module.exports = {
     await fetchServerData();
 
     async function sendRconCommand(server, command) {
+      let rcon;
       try {
-        const rcon = await Rcon.connect({ host: server.ip, port: server.port, password: server.password });
+        rcon = await Rcon.connect({ host: server.ip, port: server.port, password: server.password });
+    
+        rcon.on('error', (error) => {
+          console.error(`[RCON] Connection error for ${server.ip}:${server.port}:`, error);
+        });
+    
         const response = await rcon.send(command);
         await rcon.end();
+        
         console.log(`[RCON] Response from ${server.ip}:${server.port}:`, response);
         return response;
       } catch (error) {
         console.error(`[RCON] Error sending command to ${server.ip}:${server.port}:`, error);
         return null;
+      } finally {
+        if (rcon) {
+          try {
+            await rcon.end();
+          } catch (err) {
+            console.error(`[RCON] Error closing connection to ${server.ip}:${server.port}:`, err);
+          }
+        }
       }
     }
+    
 
     // **Middleware for API Key Authentication**
     function authenticateApiKey(req, res, next) {
