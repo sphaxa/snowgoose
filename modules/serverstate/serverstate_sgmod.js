@@ -4,6 +4,7 @@ const express = require('express');
 require('dotenv').config();
 const { Rcon } = require('rcon-client');
 const axios = require('axios');
+const { NodeSSH } = require('node-ssh');
 
 module.exports = {
   meta: {
@@ -18,6 +19,8 @@ module.exports = {
     let channelServers = {};
     // Map for the RCON endpoint (keyed by ip:port)
     let serverAddressMap = {};
+    // List of allowable SSH commands
+    let sshCmdAllowlist = ['start', 'stop', 'update', 'details'];
 
     let hardcodedChannelIds = [];
     let publicChannelIds = []; // New array for channels using PublicChannelId
@@ -45,7 +48,9 @@ module.exports = {
             name: server.name, 
             ip, 
             port: parseInt(port), 
-            password: server.rconPassword 
+            password: server.rconPassword,
+            sshUsername: server.machineUsername,
+            sshPassword: server.machinePassword
           };
 
           // Use matchroomId as the key for channelServers (for message handling)
@@ -93,8 +98,55 @@ module.exports = {
         }
       }
     }
-    
 
+    async function sendSshCommand(server, command) {
+      let output = null;
+      let sshClient;
+
+      // Sanity check
+      if (!sshCmdAllowlist.includes(command)) {
+        return output;
+      }
+
+      try {
+        sshClient = new NodeSSH();
+
+        await sshClient.connect({
+          host: server.ip,
+          port: 22,
+          username: server.sshUsername,
+          password: server.sshPassword
+        });
+
+        console.log(`[SSH] Connection established to ${server.name}`);
+
+        let fullCommand = "./cs2server ";
+
+        if (command === "details") {
+          fullCommand = "TERM=xterm-256color " + fullCommand
+            + `details | grep Status | tail -1 | awk -F':\t' '{print $2}' | sed -r "s/\\x1B\\[([0-9]{1,3}(;[0-9]{1,3})*)?[mGK]//g"`;
+        } else {
+          fullCommand += command;
+        }
+
+        console.log(`[SSH] Executing command on ${server.name}: ${fullCommand}`);
+
+        output = await sshClient.execCommand(fullCommand, { cwd: `/home/${server.sshUsername}` });
+
+        console.log(`[SSH] Response from ${server.name}: ${JSON.stringify(output)}`);
+      } catch (error) {
+        console.error(`[SSH] Error sending command to ${server.name}:`, error);
+      } finally {
+        try {
+          sshClient?.dispose();
+        } catch (err) {
+          console.error(`[SSH] Error closing connection to ${server.name}:`, err);
+        }
+      }
+
+      return output;
+    }
+    
     // **Middleware for API Key Authentication**
     function authenticateApiKey(req, res, next) {
       const requestApiKey = req.headers['x-api-key'];
@@ -146,6 +198,40 @@ module.exports = {
         }
       }
     }
+
+    // **Expose an SSH API Endpoint with API Key Protection**
+    app.post('/ssh', authenticateApiKey, async (req, res) => {
+      const { ip, port, command } = req.body;
+
+      if (!ip || !port || !command) {
+        return res.status(400).json({ error: 'Missing required parameters: ip, port, or command' });
+      }
+
+      if (!sshCmdAllowlist.includes(command)) {
+        return res.status(400).json({ error: 'Invalid SSH command' });
+      }
+
+      const serverKey = `${ip}:${port}`;
+      const server = serverAddressMap[serverKey];
+
+      if (!server) {
+        return res.status(404).json({ error: 'Server not found for the provided IP and port' });
+      }
+
+      console.log(`[SERVERSTATE MODULE] Received SSH request for ${server.name} -> ${command}`);
+
+      let responseData = await sendSshCommand(server, command);
+
+      if (responseData === "") {
+        responseData = "No Message";
+      }
+
+      if (responseData) {
+        return res.json({ success: true, response: responseData });
+      } else {
+        return res.status(500).json({ success: false, error: 'Failed to execute SSH command' });
+      }
+    });
 
     // **Start HTTPS Server with PFX Certificate**
     https.createServer(options, app).listen(3001, '0.0.0.0', () => {

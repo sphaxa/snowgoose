@@ -16,10 +16,10 @@
     "discord.js": "^14.11.0",
     "dotenv": "^16.3.1",
     "express": "^4.18.2",
+    "node-ssh": "^13.2.1",
     "pg": "^8.11.1",
     "pg-promise": "^11.5.0",
-    "rcon-client": "^4.2.5",
-    "ssh2": "^1.16.0"
+    "rcon-client": "^4.2.5"
   },
   "devDependencies": {
     "eslint": "^8.45.0",
