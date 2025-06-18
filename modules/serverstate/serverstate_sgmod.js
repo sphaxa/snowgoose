@@ -100,13 +100,13 @@ module.exports = {
     }
 
     async function sendSshCommand(server, command) {
-      let output = null;
-      let sshClient;
-
       // Sanity check
       if (!sshCmdAllowlist.includes(command)) {
-        return output;
+        return null;
       }
+
+      let sshClient;
+      let output = null;
 
       try {
         sshClient = new NodeSSH();
@@ -124,16 +124,30 @@ module.exports = {
 
         if (command === "details") {
           fullCommand = "TERM=xterm-256color " + fullCommand
-            + `details | grep Status | tail -1 | awk -F':\t' '{print $2}' | sed -r "s/\\x1B\\[([0-9]{1,3}(;[0-9]{1,3})*)?[mGK]//g"`;
+            + `details | grep Status | tail -1 | awk -F':\\t' '{print $2}'`;
         } else {
           fullCommand += command;
         }
 
+        fullCommand += ` | sed -r "s/\\x1B\\[([0-9]{1,3}(;[0-9]{1,3})*)?[mGK]//g"`;
+
         console.log(`[SSH] Executing command on ${server.name}: ${fullCommand}`);
 
-        output = await sshClient.execCommand(fullCommand, { cwd: `/home/${server.sshUsername}` });
+        commandResult = await sshClient.execCommand(fullCommand, { cwd: `/home/${server.sshUsername}` });
 
-        console.log(`[SSH] Response from ${server.name}: ${JSON.stringify(output)}`);
+        console.log(`[SSH] Response from ${server.name}: ${JSON.stringify(commandResult)}`);
+
+        output = {
+          status: commandResult.code,
+          message: ""
+        };
+
+        if (commandResult.code != 0 && commandResult.stdout.length === 0) {
+          output.message = commandResult.stderr;
+        } else {
+          const splitStdout = commandResult.stdout.split('\r');
+          output.message = splitStdout[splitStdout.length - 1];
+        }
       } catch (error) {
         console.error(`[SSH] Error sending command to ${server.name}:`, error);
       } finally {
