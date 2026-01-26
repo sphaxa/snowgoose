@@ -36,11 +36,21 @@ module.exports = {
 
     async function fetchServerData() {
       try {
-        const response = await axios.get('https://frag.events/api/servers/all-sg', {
+        const response = await axios.get('https://frag.to/api/servers/all-sg', {
           headers: { 'X-Api-Key': process.env.API_KEY }
         });
 
-        const servers = response.data;
+        const servers1 = response.data;
+
+        const response2 = await axios.get('https://2.frag.to/api/servers/all-sg', {
+          headers: { 'X-Api-Key': process.env.API_KEY }
+        });
+
+        const servers2 = response2.data;
+
+        const servers = [...servers1, ...servers2];
+
+        console.log(servers);
 
         servers.forEach(server => {
           const [ip, port] = server.address.split(':');
