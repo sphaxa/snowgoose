@@ -36,17 +36,26 @@ module.exports = {
 
     async function fetchServerData() {
       try {
-        const response = await axios.get('https://frag.to/api/servers/all-sg', {
-          headers: { 'X-Api-Key': process.env.API_KEY }
-        });
+        let servers1 = [];
+        let servers2 = [];
 
-        const servers1 = response.data;
+        try {
+          const response = await axios.get('https://frag.to/api/servers/all-sg', {
+            headers: { 'X-Api-Key': process.env.API_KEY }
+          });
+          servers1 = response.data;
+        } catch (error) {
+          console.warn('[SERVERSTATE MODULE] Warning: Failed to fetch from frag.to API:', error.message);
+        }
 
-        const response2 = await axios.get('https://2.frag.to/api/servers/all-sg', {
-          headers: { 'X-Api-Key': process.env.API_KEY }
-        });
-
-        const servers2 = response2.data;
+        try {
+          const response2 = await axios.get('https://2.frag.to/api/servers/all-sg', {
+            headers: { 'X-Api-Key': process.env.API_KEY }
+          });
+          servers2 = response2.data;
+        } catch (error) {
+          console.warn('[SERVERSTATE MODULE] Warning: Failed to fetch from 2.frag.to API:', error.message);
+        }
 
         const servers = [...servers1, ...servers2];
 
@@ -75,7 +84,7 @@ module.exports = {
 
         console.log('[SERVERSTATE MODULE] Successfully fetched server data.');
       } catch (error) {
-        console.error('[SERVERSTATE MODULE] Error fetching server data:', error);
+        console.error('[SERVERSTATE MODULE] Error processing server data:', error);
       }
     }
 
