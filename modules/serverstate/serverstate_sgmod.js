@@ -21,9 +21,11 @@ module.exports = {
     let serverAddressMap = {};
     // List of allowable SSH commands
     let sshCmdAllowlist = ['start', 'stop', 'update', 'details'];
+    // Per-server RCON queues (keyed by ip:port) to prevent concurrent connection collisions
+    const rconQueues = {};
 
     let hardcodedChannelIds = [];
-    let publicChannelIds = []; // New array for channels using PublicChannelId
+    let publicChannelIds = [];
     const app = express();
     app.use(express.json());
 
@@ -61,6 +63,10 @@ module.exports = {
 
         console.log(servers);
 
+        // Reset maps so removed servers don't linger
+        channelServers = {};
+        serverAddressMap = {};
+
         servers.forEach(server => {
           const [ip, port] = server.address.split(':');
           const serverData = { 
@@ -90,24 +96,52 @@ module.exports = {
 
     await fetchServerData();
 
+    // Refresh server data every 5 minutes so stale/removed servers don't persist
+    setInterval(() => {
+      console.log('[SERVERSTATE MODULE] Refreshing server data...');
+      fetchServerData();
+    }, 5 * 60 * 1000);
+
+    // Returns the tail of the promise chain for a given server, creating it if needed
+    function getRconQueue(serverKey) {
+      if (!rconQueues[serverKey]) {
+        rconQueues[serverKey] = Promise.resolve();
+      }
+      return rconQueues[serverKey];
+    }
+
+    // Enqueues an RCON command for a server so concurrent requests don't collide
+    function enqueueRcon(server, command) {
+      const key = `${server.ip}:${server.port}`;
+      const next = getRconQueue(key).then(() => sendRconCommand(server, command));
+      // Prevent a failed command from killing the queue for that server
+      rconQueues[key] = next.catch(() => {});
+      return next;
+    }
+
     async function sendRconCommand(server, command) {
       let rcon;
       try {
-        rcon = await Rcon.connect({ host: server.ip, port: server.port, password: server.password });
-    
+        rcon = await Rcon.connect({
+          host: server.ip,
+          port: server.port,
+          password: server.password,
+          timeout: 5000  // 5s connect timeout — prevents hung servers from blocking the queue
+        });
+
         rcon.on('error', (error) => {
           console.error(`[RCON] Connection error for ${server.ip}:${server.port}:`, error);
         });
-    
+
         const response = await rcon.send(command);
-        await rcon.end();
-        
+
         console.log(`[RCON] Response from ${server.ip}:${server.port}:`, response);
         return response;
       } catch (error) {
         console.error(`[RCON] Error sending command to ${server.ip}:${server.port}:`, error);
         return null;
       } finally {
+        // Only close in finally — avoids the double rcon.end() bug
         if (rcon) {
           try {
             await rcon.end();
@@ -208,7 +242,7 @@ module.exports = {
 
       console.log(`[SERVERSTATE MODULE] Received RCON request for ${server.ip}:${server.port} -> ${command}`);
 
-      let responseData = await sendRconCommand(server, command);
+      let responseData = await enqueueRcon(server, command);
 
       if (responseData === "") {
         responseData = "No Message";
@@ -304,7 +338,7 @@ module.exports = {
         const server = channelServers[channelId];
         if (server) {
           console.log(`[SERVERSTATE MODULE] Sending RCON command to ${server.ip}:${server.port}: ${userMessage}`);
-          const response = await sendRconCommand(server, "relay_fbws_speak " + userMessage);
+          const response = await enqueueRcon(server, "relay_fbws_speak " + userMessage);
           if (response != null) {
             await message.react('✅');
           } else {
