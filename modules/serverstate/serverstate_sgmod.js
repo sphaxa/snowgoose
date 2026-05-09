@@ -102,6 +102,18 @@ module.exports = {
       fetchServerData();
     }, 5 * 60 * 1000);
 
+    // Dedupe concurrent on-miss refreshes — many requests for the same unknown
+    // server should only trigger one refetch, not N.
+    let refreshInFlight = null;
+    function refreshServerData() {
+      if (!refreshInFlight) {
+        refreshInFlight = fetchServerData().finally(() => {
+          refreshInFlight = null;
+        });
+      }
+      return refreshInFlight;
+    }
+
     // Returns the tail of the promise chain for a given server, creating it if needed
     function getRconQueue(serverKey) {
       if (!rconQueues[serverKey]) {
@@ -235,7 +247,13 @@ module.exports = {
       }
 
       const serverKey = `${ip}:${port}`;
-      const server = serverAddressMap[serverKey];
+      let server = serverAddressMap[serverKey];
+
+      if (!server) {
+        console.log(`[SERVERSTATE MODULE] ${serverKey} not in cache — refreshing before RCON dispatch`);
+        await refreshServerData();
+        server = serverAddressMap[serverKey];
+      }
 
       if (!server) {
         return res.status(404).json({ error: 'Server not found for the provided IP and port' });
