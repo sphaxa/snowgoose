@@ -421,6 +421,8 @@ module.exports = {
       }
     }
 
+    // Returns { channel, created } — `created` is true only when we just made it (so the caller
+    // can post a welcome embed on first creation, not on every sync).
     async function resolveOrCreateChannel(guild, team, category, role) {
       const desiredName = sanitizeChannelName(team.name);
       // 1) Stored ID
@@ -436,16 +438,16 @@ module.exports = {
             try { await existing.setName(desiredName); }
             catch (err) { console.warn(`[DISCORD SYNC] Could not rename channel ${existing.id}: ${err.message}`); }
           }
-          return existing;
+          return { channel: existing, created: false };
         }
       }
       // 2) Name match within the category
       const byName = category.children?.cache?.find(c => c.name === desiredName)
         || guild.channels.cache.find(c => c.parentId === category.id && c.name === desiredName);
-      if (byName) return byName;
+      if (byName) return { channel: byName, created: false };
       // 3) Create
       try {
-        return await guild.channels.create({
+        const channel = await guild.channels.create({
           name: desiredName,
           type: 0, // GuildText
           parent: category.id,
@@ -455,9 +457,36 @@ module.exports = {
           ],
           reason: `Team channel for ${team.name} (Nexus team ${team.id})`
         });
+        return { channel, created: true };
       } catch (err) {
         console.error(`[DISCORD SYNC] Could not create channel for team ${team.id} (${team.name}):`, err.message);
-        return null;
+        return { channel: null, created: false };
+      }
+    }
+
+    // Welcome embed sent into a freshly-created team channel. Edit the JSON below to taste —
+    // {team}, {event}, {url}, and {role} are filled in by buildWelcomeEmbed.
+    function buildWelcomeEmbed({ team, event, url, role }) {
+      return {
+        color: 0x000000,
+        title: `Welcome, ${team}!`,
+        description: `Welcome to **${event}**. Head to ${url} to access your roster and matches.`,
+        footer: { text: 'Ping @MatchAdmin if you need anything.' },
+        timestamp: new Date().toISOString()
+      };
+    }
+
+    async function sendWelcomeEmbed(channel, { teamName, eventName, nexusBaseUrl, role }) {
+      try {
+        const embed = buildWelcomeEmbed({
+          team: teamName,
+          event: eventName || 'the event',
+          url: nexusBaseUrl,
+          role: role ? `<@&${role.id}>` : '@team'
+        });
+        await channel.send({ embeds: [embed] });
+      } catch (err) {
+        console.warn(`[DISCORD SYNC] Could not post welcome embed in ${channel.id}: ${err.message}`);
       }
     }
 
@@ -521,14 +550,14 @@ module.exports = {
       }
     }
 
-    async function syncTeamInGuild(guild, team, category, nexusBaseUrl) {
+    async function syncTeamInGuild(guild, team, category, nexusBaseUrl, eventName) {
       if (!team.name) {
         console.warn(`[DISCORD SYNC] Skipping team ${team.id} — no name.`);
         return null;
       }
       const role = await resolveOrCreateRole(guild, team);
       if (!role) return null;
-      const channel = await resolveOrCreateChannel(guild, team, category, role);
+      const { channel, created } = await resolveOrCreateChannel(guild, team, category, role);
       if (!channel) return { roleId: role.id, channelId: null };
       await ensureChannelPermissions(channel, guild, role);
       await syncRoleMembers(guild, role, team.discordUsernames);
@@ -541,6 +570,16 @@ module.exports = {
           discordChannelId: resolvedChannelId
         });
       }
+
+      if (created) {
+        await sendWelcomeEmbed(channel, {
+          teamName: team.name,
+          eventName,
+          nexusBaseUrl,
+          role
+        });
+      }
+
       return { roleId: resolvedRoleId, channelId: resolvedChannelId };
     }
 
@@ -632,7 +671,7 @@ module.exports = {
         const expectedRoleIds = new Set();
         for (const team of teams) {
           try {
-            const result = await syncTeamInGuild(targetGuild, team, targetCategory, nexusBaseUrl);
+            const result = await syncTeamInGuild(targetGuild, team, targetCategory, nexusBaseUrl, data.activeEventName);
             if (result?.roleId) expectedRoleIds.add(result.roleId);
             if (result?.channelId) expectedChannelIds.add(result.channelId);
           } catch (err) {
