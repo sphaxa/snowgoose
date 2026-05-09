@@ -112,6 +112,7 @@ module.exports = {
 
     // Enqueues an RCON command for a server so concurrent requests don't collide
     function enqueueRcon(server, command) {
+      console.log(`[SERVERSTATE MODULE] Enqueuing RCON command for ${server.ip}:${server.port} -> ${command}`);
       const key = `${server.ip}:${server.port}`;
       const next = getRconQueue(key).then(() => sendRconCommand(server, command));
       // Prevent a failed command from killing the queue for that server
