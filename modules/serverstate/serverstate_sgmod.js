@@ -319,6 +319,287 @@ module.exports = {
       }
     });
 
+    // ── Discord Roster Sync ────────────────────────────────────────────────
+    // Pulls team rosters from Nexus and reconciles per-team Discord roles + channels.
+    //
+    // Multi-guild: snowgoose runs in several guilds. We treat the guild that contains the
+    // configured TeamChannelCategoryId as the team-management guild. Anything else gets skipped.
+    //
+    // Rename-safe: Nexus stores per-team DiscordRoleId / DiscordChannelId. We look up by ID
+    // first, fall back to name match, and POST the resolved IDs back so future syncs are stable
+    // even if the team or its channel/role gets renamed.
+
+    // v14 permission bit names; raw bigints used so this works on both v13 and v14.
+    const PERM_VIEW_CHANNEL = 1n << 10n;
+    const PERM_SEND_MESSAGES = 1n << 11n;
+    const PERM_READ_HISTORY = 1n << 16n;
+
+    function sanitizeChannelName(name) {
+      // Discord channel names: lowercase, alphanumeric/dash/underscore, max 100.
+      return (name || '')
+        .toLowerCase()
+        .replace(/\s+/g, '-')
+        .replace(/[^a-z0-9_-]/g, '')
+        .slice(0, 100) || 'team';
+    }
+
+    let rosterSyncInFlight = false;
+
+    async function fetchRosterData(teamId) {
+      try {
+        const url = teamId
+          ? `https://frag.to/api/discord/roster-data?teamId=${teamId}`
+          : 'https://frag.to/api/discord/roster-data';
+        const response = await axios.get(url, {
+          headers: { 'X-Api-Key': process.env.API_KEY },
+          timeout: 15000
+        });
+        return response.data;
+      } catch (error) {
+        console.error('[DISCORD SYNC] Failed to fetch roster data:', error.message);
+        return null;
+      }
+    }
+
+    async function reportTeamIds(teamId, ids) {
+      try {
+        await axios.post(
+          `https://frag.to/api/discord/team/${teamId}/discord-ids`,
+          ids,
+          {
+            headers: { 'X-Api-Key': process.env.API_KEY, 'Content-Type': 'application/json' },
+            timeout: 10000
+          }
+        );
+      } catch (error) {
+        console.warn(`[DISCORD SYNC] Failed to report IDs for team ${teamId}:`, error.message);
+      }
+    }
+
+    function findCategoryInGuild(guild, categoryId) {
+      if (!categoryId) return null;
+      const ch = guild.channels.cache.get(categoryId);
+      // type 4 = GuildCategory in both v13 and v14
+      return ch && ch.type === 4 ? ch : null;
+    }
+
+    async function resolveOrCreateRole(guild, team) {
+      // 1) Stored ID — fast path, survives rename
+      if (team.discordRoleId) {
+        const existing = guild.roles.cache.get(team.discordRoleId)
+          || await guild.roles.fetch(team.discordRoleId).catch(() => null);
+        if (existing) {
+          if (existing.name !== team.name) {
+            try { await existing.setName(team.name); }
+            catch (err) { console.warn(`[DISCORD SYNC] Could not rename role ${existing.id}: ${err.message}`); }
+          }
+          return existing;
+        }
+      }
+      // 2) Name match
+      const byName = guild.roles.cache.find(r => r.name === team.name);
+      if (byName) return byName;
+      // 3) Create
+      try {
+        return await guild.roles.create({
+          name: team.name,
+          mentionable: true,
+          reason: `Team role for ${team.name} (Nexus team ${team.id})`
+        });
+      } catch (err) {
+        console.error(`[DISCORD SYNC] Could not create role for team ${team.id} (${team.name}):`, err.message);
+        return null;
+      }
+    }
+
+    async function resolveOrCreateChannel(guild, team, category, role) {
+      const desiredName = sanitizeChannelName(team.name);
+      // 1) Stored ID
+      if (team.discordChannelId) {
+        const existing = guild.channels.cache.get(team.discordChannelId)
+          || await guild.channels.fetch(team.discordChannelId).catch(() => null);
+        if (existing) {
+          if (existing.parentId !== category.id) {
+            try { await existing.setParent(category.id, { lockPermissions: false }); }
+            catch (err) { console.warn(`[DISCORD SYNC] Could not move channel ${existing.id}: ${err.message}`); }
+          }
+          if (existing.name !== desiredName) {
+            try { await existing.setName(desiredName); }
+            catch (err) { console.warn(`[DISCORD SYNC] Could not rename channel ${existing.id}: ${err.message}`); }
+          }
+          return existing;
+        }
+      }
+      // 2) Name match within the category
+      const byName = category.children?.cache?.find(c => c.name === desiredName)
+        || guild.channels.cache.find(c => c.parentId === category.id && c.name === desiredName);
+      if (byName) return byName;
+      // 3) Create
+      try {
+        return await guild.channels.create({
+          name: desiredName,
+          type: 0, // GuildText
+          parent: category.id,
+          permissionOverwrites: [
+            { id: guild.roles.everyone.id, deny: PERM_VIEW_CHANNEL },
+            { id: role.id, allow: PERM_VIEW_CHANNEL | PERM_SEND_MESSAGES | PERM_READ_HISTORY }
+          ],
+          reason: `Team channel for ${team.name} (Nexus team ${team.id})`
+        });
+      } catch (err) {
+        console.error(`[DISCORD SYNC] Could not create channel for team ${team.id} (${team.name}):`, err.message);
+        return null;
+      }
+    }
+
+    async function ensureChannelPermissions(channel, guild, role) {
+      try {
+        await channel.permissionOverwrites.edit(guild.roles.everyone, { ViewChannel: false });
+        await channel.permissionOverwrites.edit(role, {
+          ViewChannel: true,
+          SendMessages: true,
+          ReadMessageHistory: true
+        });
+      } catch (err) {
+        console.warn(`[DISCORD SYNC] Could not set permissions on channel ${channel.id}: ${err.message}`);
+      }
+    }
+
+    async function syncRoleMembers(guild, role, discordUsernames) {
+      // Normalize roster usernames once (lowercase, trimmed). Discord global usernames are
+      // case-insensitive, so match on lowercase.
+      const wantedSet = new Set(
+        (discordUsernames || []).map(u => (u || '').trim().toLowerCase()).filter(Boolean)
+      );
+
+      // Add: search the guild for each wanted username and grant the role.
+      for (const username of wantedSet) {
+        try {
+          const candidates = await guild.members.fetch({ query: username, limit: 5 });
+          const member = candidates.find(m =>
+            (m.user?.username || '').toLowerCase() === username
+            || (m.user?.tag || '').toLowerCase() === username
+          );
+          if (!member) {
+            console.log(`[DISCORD SYNC] No guild member matched '${username}' in ${guild.name}`);
+            continue;
+          }
+          if (!member.roles.cache.has(role.id)) {
+            await member.roles.add(role, `Roster sync: add to ${role.name}`);
+            console.log(`[DISCORD SYNC] +${member.user.username} → ${role.name}`);
+          }
+        } catch (err) {
+          console.warn(`[DISCORD SYNC] Lookup/add failed for '${username}':`, err.message);
+        }
+      }
+
+      // Remove: anyone currently holding the role whose username isn't in the wanted set.
+      try {
+        const holders = role.members; // Collection — populated when GUILD_MEMBERS intent + cache available.
+        for (const member of holders.values()) {
+          const uname = (member.user?.username || '').toLowerCase();
+          if (!wantedSet.has(uname)) {
+            try {
+              await member.roles.remove(role, 'Roster sync: not on team');
+              console.log(`[DISCORD SYNC] -${member.user.username} → ${role.name}`);
+            } catch (err) {
+              console.warn(`[DISCORD SYNC] Could not remove ${member.user?.username} from ${role.name}: ${err.message}`);
+            }
+          }
+        }
+      } catch (err) {
+        console.warn(`[DISCORD SYNC] Could not enumerate role.members for ${role.name}: ${err.message}`);
+      }
+    }
+
+    async function syncTeamInGuild(guild, team, category) {
+      if (!team.name) {
+        console.warn(`[DISCORD SYNC] Skipping team ${team.id} — no name.`);
+        return;
+      }
+      const role = await resolveOrCreateRole(guild, team);
+      if (!role) return;
+      const channel = await resolveOrCreateChannel(guild, team, category, role);
+      if (!channel) return;
+      await ensureChannelPermissions(channel, guild, role);
+      await syncRoleMembers(guild, role, team.discordUsernames);
+
+      const resolvedRoleId = role.id;
+      const resolvedChannelId = channel.id;
+      if (resolvedRoleId !== team.discordRoleId || resolvedChannelId !== team.discordChannelId) {
+        await reportTeamIds(team.id, {
+          discordRoleId: resolvedRoleId,
+          discordChannelId: resolvedChannelId
+        });
+      }
+    }
+
+    async function syncDiscordRoster(teamId) {
+      if (rosterSyncInFlight) {
+        console.log('[DISCORD SYNC] Sync already in flight, skipping.');
+        return;
+      }
+      rosterSyncInFlight = true;
+      try {
+        const data = await fetchRosterData(teamId || null);
+        if (!data) return;
+        if (!data.teamChannelCategoryId) {
+          console.log('[DISCORD SYNC] TeamChannelCategoryId not configured in Nexus General settings — skipping.');
+          return;
+        }
+        if (!Array.isArray(data.teams) || data.teams.length === 0) {
+          console.log('[DISCORD SYNC] No teams in roster payload — nothing to do.');
+          return;
+        }
+
+        // Find the (one) guild where the configured team-channel category lives.
+        let targetGuild = null;
+        let targetCategory = null;
+        for (const guild of client.guilds.cache.values()) {
+          const cat = findCategoryInGuild(guild, data.teamChannelCategoryId);
+          if (cat) {
+            targetGuild = guild;
+            targetCategory = cat;
+            break;
+          }
+        }
+
+        if (!targetGuild) {
+          console.warn(`[DISCORD SYNC] No guild contains TeamChannelCategoryId=${data.teamChannelCategoryId}. Bot may not be in the right guild, or the ID is wrong.`);
+          return;
+        }
+
+        console.log(`[DISCORD SYNC] Syncing ${data.teams.length} team(s) in guild "${targetGuild.name}" (${targetGuild.id}).`);
+        for (const team of data.teams) {
+          try {
+            await syncTeamInGuild(targetGuild, team, targetCategory);
+          } catch (err) {
+            console.error(`[DISCORD SYNC] Team ${team.id} (${team.name}) failed:`, err.message);
+          }
+        }
+        console.log('[DISCORD SYNC] Sync complete.');
+      } finally {
+        rosterSyncInFlight = false;
+      }
+    }
+
+    // Manual trigger endpoint — Nexus calls this on team-edit and on the manual button.
+    app.post('/sync-discord-roster', authenticateApiKey, async (req, res) => {
+      const teamId = req.body && Number.isInteger(req.body.teamId) ? req.body.teamId : null;
+      // Fire-and-forget so Nexus doesn't block on the actual sync.
+      syncDiscordRoster(teamId).catch(err => console.error('[DISCORD SYNC] Background sync failed:', err));
+      return res.json({ accepted: true, teamId });
+    });
+
+    // Periodic sweep (independent of Nexus). Catches drift, manual Discord edits, missed pushes.
+    // Initial delay gives the Discord client time to populate its guild/member cache after boot.
+    setTimeout(() => {
+      syncDiscordRoster().catch(err => console.error('[DISCORD SYNC] Initial sync failed:', err));
+    }, 60 * 1000);
+    setInterval(() => {
+      syncDiscordRoster().catch(err => console.error('[DISCORD SYNC] Scheduled sync failed:', err));
+    }, 30 * 60 * 1000);
+
     // **Start HTTPS Server with PFX Certificate**
     https.createServer(options, app).listen(3001, '0.0.0.0', () => {
       console.log('[SERVERSTATE MODULE] HTTPS RCON API listening on port 3001 (Protected)');
