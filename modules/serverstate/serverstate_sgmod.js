@@ -385,6 +385,21 @@ module.exports = {
       }
     }
 
+    async function reportMatchroomId(baseUrl, matchroomId, channelId) {
+      try {
+        await axios.post(
+          `${baseUrl}/api/discord/matchroom/${matchroomId}/discord-id`,
+          { discordChannelId: channelId },
+          {
+            headers: { 'X-Api-Key': process.env.API_KEY, 'Content-Type': 'application/json' },
+            timeout: 10000
+          }
+        );
+      } catch (error) {
+        console.warn(`[DISCORD SYNC] Failed to report matchroom ${matchroomId} channel to ${baseUrl}:`, error.message);
+      }
+    }
+
     function findCategoryInGuild(guild, categoryId) {
       if (!categoryId) return null;
       const ch = guild.channels.cache.get(categoryId);
@@ -487,6 +502,165 @@ module.exports = {
         await channel.send({ embeds: [embed] });
       } catch (err) {
         console.warn(`[DISCORD SYNC] Could not post welcome embed in ${channel.id}: ${err.message}`);
+      }
+    }
+
+    // ── Matchroom channels ────────────────────────────────────────────────
+
+    function buildMatchroomChannelName(team1Name, team2Name, matchroomId) {
+      const t1 = sanitizeChannelName(team1Name);
+      const t2 = sanitizeChannelName(team2Name);
+      // Trim each side so the combined name fits in 100 chars even with the suffix.
+      const max = 40;
+      return `${t1.slice(0, max)}-vs-${t2.slice(0, max)}-${matchroomId}`.slice(0, 100);
+    }
+
+    // Edit this template the same way as buildWelcomeEmbed. Variables filled in by
+    // sendMatchroomWelcomeEmbed: {team1}, {team2}, {url}, {vetoStart} (Discord <t:…> tag).
+    function buildMatchroomWelcomeEmbed({ team1, team2, url, vetoStart, role1, role2 }) {
+      return {
+        color: 0xED4245, // Discord red — separates matchroom from team welcome
+        title: `${team1} vs ${team2}`,
+        description: `Your matchroom is live. Head to ${url} to access vetoes, server info, and chat.`,
+        fields: [
+          { name: 'Teams',                value: `${role1} vs ${role2}`, inline: false },
+          { name: 'Location vetoes start', value: vetoStart, inline: false }
+        ],
+        footer: { text: 'GLHF.' },
+        timestamp: new Date().toISOString()
+      };
+    }
+
+    async function sendMatchroomWelcomeEmbed(channel, { matchroom, nexusBaseUrl, role1, role2 }) {
+      try {
+        const url = `${nexusBaseUrl}/matchroom/${matchroom.id}`;
+        // Use Discord's relative timestamp tag so it renders correctly in every viewer's timezone.
+        const startSeconds = matchroom.startTimeUtc
+          ? Math.floor(new Date(matchroom.startTimeUtc).getTime() / 1000)
+          : null;
+        const vetoStart = startSeconds ? `<t:${startSeconds}:F> (<t:${startSeconds}:R>)` : 'TBD';
+        const embed = buildMatchroomWelcomeEmbed({
+          team1: matchroom.team1Name,
+          team2: matchroom.team2Name,
+          url,
+          vetoStart,
+          role1: role1 ? `<@&${role1.id}>` : `**${matchroom.team1Name}**`,
+          role2: role2 ? `<@&${role2.id}>` : `**${matchroom.team2Name}**`
+        });
+        await channel.send({ embeds: [embed] });
+      } catch (err) {
+        console.warn(`[DISCORD SYNC] Could not post matchroom welcome embed in ${channel.id}: ${err.message}`);
+      }
+    }
+
+    function resolveTeamRole(guild, teamId, payloadRoleId, teamRolesById) {
+      // Order: payload-supplied ID (DB) → just-resolved role from this sync's team pass → null
+      if (payloadRoleId) {
+        const r = guild.roles.cache.get(payloadRoleId);
+        if (r) return r;
+      }
+      const justResolved = teamRolesById.get(teamId);
+      if (justResolved) {
+        const r = guild.roles.cache.get(justResolved);
+        if (r) return r;
+      }
+      return null;
+    }
+
+    async function resolveOrCreateMatchroomChannel(guild, matchroom, category, role1, role2) {
+      const desiredName = buildMatchroomChannelName(matchroom.team1Name, matchroom.team2Name, matchroom.id);
+
+      const everyoneOverwrite = { id: guild.roles.everyone.id, deny: PERM_VIEW_CHANNEL };
+      const roleOverwrites = [];
+      if (role1) roleOverwrites.push({ id: role1.id, allow: PERM_VIEW_CHANNEL | PERM_SEND_MESSAGES | PERM_READ_HISTORY });
+      if (role2) roleOverwrites.push({ id: role2.id, allow: PERM_VIEW_CHANNEL | PERM_SEND_MESSAGES | PERM_READ_HISTORY });
+
+      // 1) Stored ID
+      if (matchroom.discordChannelId) {
+        const existing = guild.channels.cache.get(matchroom.discordChannelId)
+          || await guild.channels.fetch(matchroom.discordChannelId).catch(() => null);
+        if (existing) {
+          if (existing.parentId !== category.id) {
+            try { await existing.setParent(category.id, { lockPermissions: false }); }
+            catch (err) { console.warn(`[DISCORD SYNC] Could not move matchroom channel ${existing.id}: ${err.message}`); }
+          }
+          if (existing.name !== desiredName) {
+            try { await existing.setName(desiredName); }
+            catch (err) { console.warn(`[DISCORD SYNC] Could not rename matchroom channel ${existing.id}: ${err.message}`); }
+          }
+          return { channel: existing, created: false };
+        }
+      }
+      // 2) Name match
+      const byName = guild.channels.cache.find(c => c.parentId === category.id && c.name === desiredName);
+      if (byName) return { channel: byName, created: false };
+      // 3) Create
+      try {
+        const channel = await guild.channels.create({
+          name: desiredName,
+          type: 0,
+          parent: category.id,
+          permissionOverwrites: [everyoneOverwrite, ...roleOverwrites],
+          reason: `Matchroom channel for ${matchroom.team1Name} vs ${matchroom.team2Name} (Nexus matchroom ${matchroom.id})`
+        });
+        return { channel, created: true };
+      } catch (err) {
+        console.error(`[DISCORD SYNC] Could not create matchroom channel for ${matchroom.id}:`, err.message);
+        return { channel: null, created: false };
+      }
+    }
+
+    async function ensureMatchroomChannelPermissions(channel, guild, role1, role2) {
+      try {
+        await channel.permissionOverwrites.edit(guild.roles.everyone, { ViewChannel: false });
+        if (role1) {
+          await channel.permissionOverwrites.edit(role1, {
+            ViewChannel: true, SendMessages: true, ReadMessageHistory: true
+          });
+        }
+        if (role2) {
+          await channel.permissionOverwrites.edit(role2, {
+            ViewChannel: true, SendMessages: true, ReadMessageHistory: true
+          });
+        }
+      } catch (err) {
+        console.warn(`[DISCORD SYNC] Could not set permissions on matchroom channel ${channel.id}: ${err.message}`);
+      }
+    }
+
+    async function syncMatchroomInGuild(guild, matchroom, category, nexusBaseUrl, teamRolesById) {
+      const role1 = resolveTeamRole(guild, matchroom.team1Id, matchroom.team1RoleId, teamRolesById);
+      const role2 = resolveTeamRole(guild, matchroom.team2Id, matchroom.team2RoleId, teamRolesById);
+      if (!role1 || !role2) {
+        console.warn(`[DISCORD SYNC] Matchroom ${matchroom.id} skipped — team role(s) not yet resolved (team1=${!!role1}, team2=${!!role2}).`);
+        return null;
+      }
+
+      const { channel, created } = await resolveOrCreateMatchroomChannel(guild, matchroom, category, role1, role2);
+      if (!channel) return null;
+      await ensureMatchroomChannelPermissions(channel, guild, role1, role2);
+
+      if (channel.id !== matchroom.discordChannelId) {
+        await reportMatchroomId(nexusBaseUrl, matchroom.id, channel.id);
+      }
+
+      if (created) {
+        await sendMatchroomWelcomeEmbed(channel, { matchroom, nexusBaseUrl, role1, role2 });
+      }
+
+      return { channelId: channel.id };
+    }
+
+    async function cleanupMatchroomOrphans(guild, category, expectedChannelIds) {
+      const channelsInCategory = guild.channels.cache.filter(c => c.parentId === category.id);
+      for (const channel of channelsInCategory.values()) {
+        if (expectedChannelIds.has(channel.id)) continue;
+        try {
+          await channel.delete('Matchroom sync: matchroom no longer exists');
+          console.log(`[DISCORD SYNC] -matchroom channel #${channel.name} (${channel.id}) — orphan`);
+        } catch (err) {
+          console.warn(`[DISCORD SYNC] Could not delete orphan matchroom channel ${channel.id}: ${err.message}`);
+        }
       }
     }
 
@@ -669,19 +843,46 @@ module.exports = {
 
         const expectedChannelIds = new Set();
         const expectedRoleIds = new Set();
+        // teamId → resolved Discord role ID, used by matchroom pass to find roles for teams that
+        // were freshly created in this same sync (so the DB writeback hasn't propagated yet).
+        const teamRolesById = new Map();
         for (const team of teams) {
           try {
             const result = await syncTeamInGuild(targetGuild, team, targetCategory, nexusBaseUrl, data.activeEventName);
-            if (result?.roleId) expectedRoleIds.add(result.roleId);
+            if (result?.roleId) {
+              expectedRoleIds.add(result.roleId);
+              teamRolesById.set(team.id, result.roleId);
+            }
             if (result?.channelId) expectedChannelIds.add(result.channelId);
           } catch (err) {
             console.error(`[DISCORD SYNC] Team ${team.id} (${team.name}) failed:`, err.message);
           }
         }
 
-        // Orphan sweep — only on a full sync. Single-team triggers leave other teams alone.
+        // Orphan sweep for team category — only on a full sync.
         if (!teamId) {
           await cleanupOrphans(targetGuild, targetCategory, expectedChannelIds, expectedRoleIds);
+        }
+
+        // ── Matchroom pass — full syncs only. Per-team triggers don't carry matchrooms.
+        const matchrooms = Array.isArray(data.matchrooms) ? data.matchrooms : [];
+        if (!teamId && data.matchroomCategoryId) {
+          const matchroomCategory = findCategoryInGuild(targetGuild, data.matchroomCategoryId);
+          if (!matchroomCategory) {
+            console.warn(`[DISCORD SYNC] MatchroomCategoryId=${data.matchroomCategoryId} not found in guild "${targetGuild.name}" — skipping matchroom pass.`);
+          } else {
+            console.log(`[DISCORD SYNC] Syncing ${matchrooms.length} matchroom(s).`);
+            const expectedMatchroomChannelIds = new Set();
+            for (const mr of matchrooms) {
+              try {
+                const result = await syncMatchroomInGuild(targetGuild, mr, matchroomCategory, nexusBaseUrl, teamRolesById);
+                if (result?.channelId) expectedMatchroomChannelIds.add(result.channelId);
+              } catch (err) {
+                console.error(`[DISCORD SYNC] Matchroom ${mr.id} failed:`, err.message);
+              }
+            }
+            await cleanupMatchroomOrphans(targetGuild, matchroomCategory, expectedMatchroomChannelIds);
+          }
         }
 
         console.log(`[DISCORD SYNC] Sync from ${nexusBaseUrl} complete.`);
