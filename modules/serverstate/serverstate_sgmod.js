@@ -400,6 +400,21 @@ module.exports = {
       }
     }
 
+    async function reportServerRelay(baseUrl, serverId, body) {
+      try {
+        await axios.post(
+          `${baseUrl}/api/discord/server/${serverId}/relay`,
+          body,
+          {
+            headers: { 'X-Api-Key': process.env.API_KEY, 'Content-Type': 'application/json' },
+            timeout: 10000
+          }
+        );
+      } catch (error) {
+        console.warn(`[DISCORD SYNC] Failed to report relay IDs for server ${serverId} to ${baseUrl}:`, error.message);
+      }
+    }
+
     function findCategoryInGuild(guild, categoryId) {
       if (!categoryId) return null;
       const ch = guild.channels.cache.get(categoryId);
@@ -664,6 +679,120 @@ module.exports = {
       }
     }
 
+    // ── Relay channels (admin-only) ────────────────────────────────────────
+    // Relay channels are private mirrors of in-server activity for staff. Created on server provision,
+    // deleted on match teardown. Naming mirrors the matchroom channel so admins can pair them by sight.
+    // Privacy is enforced solely by denying @everyone ViewChannel — Discord users with the Administrator
+    // permission bypass channel-level overrides automatically, so they retain access by default.
+
+    async function fetchRelayDataForServer(baseUrl) {
+      try {
+        const response = await axios.get(`${baseUrl}/api/discord/roster-data`, {
+          headers: { 'X-Api-Key': process.env.API_KEY },
+          timeout: 15000
+        });
+        return response.data;
+      } catch (error) {
+        console.error(`[DISCORD SYNC] Failed to fetch roster data from ${baseUrl} for relay:`, error.message);
+        return null;
+      }
+    }
+
+    async function createRelayChannel({ serverId, matchroomId, team1Name, team2Name, nexusBaseUrl }) {
+      const data = await fetchRelayDataForServer(nexusBaseUrl);
+      if (!data || !data.relayCategoryId) {
+        console.warn(`[DISCORD SYNC] Cannot create relay channel for server ${serverId} — RelayCategoryId not configured at ${nexusBaseUrl}.`);
+        return null;
+      }
+
+      // Locate the guild that owns the relay category. Same guild as team/matchroom categories in
+      // most setups, but we look it up independently in case an admin split them.
+      let targetGuild = null;
+      let targetCategory = null;
+      for (const guild of client.guilds.cache.values()) {
+        const cat = findCategoryInGuild(guild, data.relayCategoryId);
+        if (cat) {
+          targetGuild = guild;
+          targetCategory = cat;
+          break;
+        }
+      }
+      if (!targetGuild) {
+        console.warn(`[DISCORD SYNC] No guild contains RelayCategoryId=${data.relayCategoryId}.`);
+        return null;
+      }
+
+      const desiredName = buildMatchroomChannelName(team1Name, team2Name, matchroomId);
+      let channel;
+      try {
+        channel = await targetGuild.channels.create({
+          name: desiredName,
+          type: 0,
+          parent: targetCategory.id,
+          permissionOverwrites: [
+            { id: targetGuild.roles.everyone.id, deny: PERM_VIEW_CHANNEL }
+            // Discord Administrator-permission users bypass overrides — no explicit allow needed.
+          ],
+          reason: `Relay channel for matchroom ${matchroomId} (server ${serverId})`
+        });
+      } catch (err) {
+        console.error(`[DISCORD SYNC] Could not create relay channel for server ${serverId}:`, err.message);
+        return null;
+      }
+
+      let webhookUrl = null;
+      try {
+        const webhook = await channel.createWebhook({
+          name: 'Nexus Relay',
+          reason: `Relay webhook for matchroom ${matchroomId} (server ${serverId})`
+        });
+        webhookUrl = webhook.url;
+      } catch (err) {
+        console.warn(`[DISCORD SYNC] Could not create relay webhook for channel ${channel.id}: ${err.message}`);
+      }
+
+      await reportServerRelay(nexusBaseUrl, serverId, {
+        matchroomId: channel.id,
+        matchroomWebhook: webhookUrl
+      });
+
+      console.log(`[DISCORD SYNC] +relay channel #${channel.name} (${channel.id}) for server ${serverId}`);
+      return { channelId: channel.id, webhookUrl };
+    }
+
+    async function deleteRelayChannel(channelId) {
+      if (!channelId) return false;
+      // Walk every guild — we don't know which one the channel was created in (could be a different
+      // guild from the roster sync target if an admin configured it that way).
+      for (const guild of client.guilds.cache.values()) {
+        const ch = guild.channels.cache.get(channelId)
+          || await guild.channels.fetch(channelId).catch(() => null);
+        if (!ch) continue;
+        try {
+          await ch.delete('Match teardown: relay no longer needed');
+          console.log(`[DISCORD SYNC] -relay channel #${ch.name} (${ch.id}) — teardown`);
+          return true;
+        } catch (err) {
+          console.warn(`[DISCORD SYNC] Could not delete relay channel ${channelId}: ${err.message}`);
+          return false;
+        }
+      }
+      return false;
+    }
+
+    async function cleanupRelayOrphans(guild, category, expectedChannelIds) {
+      const channelsInCategory = guild.channels.cache.filter(c => c.parentId === category.id);
+      for (const channel of channelsInCategory.values()) {
+        if (expectedChannelIds.has(channel.id)) continue;
+        try {
+          await channel.delete('Relay sync: server no longer exists');
+          console.log(`[DISCORD SYNC] -relay channel #${channel.name} (${channel.id}) — orphan`);
+        } catch (err) {
+          console.warn(`[DISCORD SYNC] Could not delete orphan relay channel ${channel.id}: ${err.message}`);
+        }
+      }
+    }
+
     async function ensureChannelPermissions(channel, guild, role) {
       try {
         await channel.permissionOverwrites.edit(guild.roles.everyone, { ViewChannel: false });
@@ -885,11 +1014,65 @@ module.exports = {
           }
         }
 
+        // ── Relay orphan sweep — full syncs only. We never CREATE relays here (that happens on
+        // server provision). We just delete any channel under the relay category that doesn't
+        // correspond to a current Server.MatchroomId.
+        if (!teamId && data.relayCategoryId) {
+          const relayCategory = findCategoryInGuild(targetGuild, data.relayCategoryId);
+          if (relayCategory) {
+            const expectedRelayChannelIds = new Set(
+              Array.isArray(data.expectedRelayChannelIds)
+                ? data.expectedRelayChannelIds.filter(id => typeof id === 'string' && id)
+                : []
+            );
+            await cleanupRelayOrphans(targetGuild, relayCategory, expectedRelayChannelIds);
+          } else {
+            console.warn(`[DISCORD SYNC] RelayCategoryId=${data.relayCategoryId} not found in guild "${targetGuild.name}" — skipping relay orphan sweep.`);
+          }
+        }
+
         console.log(`[DISCORD SYNC] Sync from ${nexusBaseUrl} complete.`);
       } finally {
         rosterSyncInFlight = false;
       }
     }
+
+    // Relay create — fired by Nexus after a server has been provisioned and its address resolved.
+    // Body: { serverId, matchroomId, team1Name, team2Name, nexusBaseUrl }
+    app.post('/create-relay-channel', authenticateApiKey, async (req, res) => {
+      const body = req.body || {};
+      if (!Number.isInteger(body.serverId) || !Number.isInteger(body.matchroomId)) {
+        return res.status(400).json({ error: 'serverId and matchroomId must be integers' });
+      }
+      if (typeof body.team1Name !== 'string' || typeof body.team2Name !== 'string') {
+        return res.status(400).json({ error: 'team1Name and team2Name must be strings' });
+      }
+      if (typeof body.nexusBaseUrl !== 'string' || !body.nexusBaseUrl.trim()) {
+        return res.status(400).json({ error: 'nexusBaseUrl is required' });
+      }
+      const nexusBaseUrl = body.nexusBaseUrl.replace(/\/+$/, '');
+      rememberNexusBaseUrl(nexusBaseUrl);
+      // Fire-and-forget so Nexus doesn't block on Discord API latency.
+      createRelayChannel({
+        serverId: body.serverId,
+        matchroomId: body.matchroomId,
+        team1Name: body.team1Name,
+        team2Name: body.team2Name,
+        nexusBaseUrl
+      }).catch(err => console.error('[DISCORD SYNC] Relay create failed:', err));
+      return res.json({ accepted: true, serverId: body.serverId });
+    });
+
+    // Relay delete — fired by Nexus on match teardown. Body: { channelId }
+    app.post('/delete-relay-channel', authenticateApiKey, async (req, res) => {
+      const body = req.body || {};
+      if (typeof body.channelId !== 'string' || !body.channelId.trim()) {
+        return res.status(400).json({ error: 'channelId is required' });
+      }
+      deleteRelayChannel(body.channelId)
+        .catch(err => console.error('[DISCORD SYNC] Relay delete failed:', err));
+      return res.json({ accepted: true, channelId: body.channelId });
+    });
 
     // Manual trigger endpoint — Nexus calls this on team-edit and on the manual button.
     // Body: { teamId: number|null, nexusBaseUrl: "https://frag.to" }
