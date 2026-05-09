@@ -343,28 +343,37 @@ module.exports = {
         .slice(0, 100) || 'team';
     }
 
+    // Snowgoose serves multiple Nexus universes (frag.to, 2.frag.to, …). Each Nexus instance includes
+    // its own base URL in the trigger payload; we remember every URL we've seen so the periodic sweep
+    // can hit all of them, not just the most recent.
+    const knownNexusBaseUrls = new Set();
     let rosterSyncInFlight = false;
 
-    async function fetchRosterData(teamId) {
+    function rememberNexusBaseUrl(baseUrl) {
+      if (typeof baseUrl !== 'string' || !baseUrl.trim()) return;
+      knownNexusBaseUrls.add(baseUrl.replace(/\/+$/, ''));
+    }
+
+    async function fetchRosterData(baseUrl, teamId) {
       try {
         const url = teamId
-          ? `https://frag.to/api/discord/roster-data?teamId=${teamId}`
-          : 'https://frag.to/api/discord/roster-data';
+          ? `${baseUrl}/api/discord/roster-data?teamId=${teamId}`
+          : `${baseUrl}/api/discord/roster-data`;
         const response = await axios.get(url, {
           headers: { 'X-Api-Key': process.env.API_KEY },
           timeout: 15000
         });
         return response.data;
       } catch (error) {
-        console.error('[DISCORD SYNC] Failed to fetch roster data:', error.message);
+        console.error(`[DISCORD SYNC] Failed to fetch roster data from ${baseUrl}:`, error.message);
         return null;
       }
     }
 
-    async function reportTeamIds(teamId, ids) {
+    async function reportTeamIds(baseUrl, teamId, ids) {
       try {
         await axios.post(
-          `https://frag.to/api/discord/team/${teamId}/discord-ids`,
+          `${baseUrl}/api/discord/team/${teamId}/discord-ids`,
           ids,
           {
             headers: { 'X-Api-Key': process.env.API_KEY, 'Content-Type': 'application/json' },
@@ -372,7 +381,7 @@ module.exports = {
           }
         );
       } catch (error) {
-        console.warn(`[DISCORD SYNC] Failed to report IDs for team ${teamId}:`, error.message);
+        console.warn(`[DISCORD SYNC] Failed to report IDs for team ${teamId} to ${baseUrl}:`, error.message);
       }
     }
 
@@ -512,43 +521,90 @@ module.exports = {
       }
     }
 
-    async function syncTeamInGuild(guild, team, category) {
+    async function syncTeamInGuild(guild, team, category, nexusBaseUrl) {
       if (!team.name) {
         console.warn(`[DISCORD SYNC] Skipping team ${team.id} — no name.`);
-        return;
+        return null;
       }
       const role = await resolveOrCreateRole(guild, team);
-      if (!role) return;
+      if (!role) return null;
       const channel = await resolveOrCreateChannel(guild, team, category, role);
-      if (!channel) return;
+      if (!channel) return { roleId: role.id, channelId: null };
       await ensureChannelPermissions(channel, guild, role);
       await syncRoleMembers(guild, role, team.discordUsernames);
 
       const resolvedRoleId = role.id;
       const resolvedChannelId = channel.id;
       if (resolvedRoleId !== team.discordRoleId || resolvedChannelId !== team.discordChannelId) {
-        await reportTeamIds(team.id, {
+        await reportTeamIds(nexusBaseUrl, team.id, {
           discordRoleId: resolvedRoleId,
           discordChannelId: resolvedChannelId
         });
       }
+      return { roleId: resolvedRoleId, channelId: resolvedChannelId };
     }
 
-    async function syncDiscordRoster(teamId) {
+    // Deletes channels in the team category that don't belong to any current team, and the roles
+    // that gated access to those channels. Only runs on a full sync (teamId == null) — a single-team
+    // trigger from a team-edit shouldn't touch other teams' channels.
+    async function cleanupOrphans(guild, category, expectedChannelIds, expectedRoleIds) {
+      // Collect every channel currently parented to the team category.
+      const channelsInCategory = guild.channels.cache.filter(c => c.parentId === category.id);
+      for (const channel of channelsInCategory.values()) {
+        if (expectedChannelIds.has(channel.id)) continue;
+
+        // Before deleting the channel, note any roles it granted ViewChannel to — those are
+        // candidate team roles to delete as well.
+        const candidateRoleIds = [];
+        try {
+          for (const ow of channel.permissionOverwrites.cache.values()) {
+            if (ow.type !== 0) continue; // 0 = role overwrite (1 = member)
+            const allowBits = typeof ow.allow?.bitfield === 'bigint' ? ow.allow.bitfield : BigInt(ow.allow ?? 0);
+            if ((allowBits & PERM_VIEW_CHANNEL) !== 0n && ow.id !== guild.roles.everyone.id) {
+              candidateRoleIds.push(ow.id);
+            }
+          }
+        } catch (err) {
+          console.warn(`[DISCORD SYNC] Could not read permission overwrites for orphan channel ${channel.id}: ${err.message}`);
+        }
+
+        try {
+          await channel.delete('Roster sync: team no longer in active event');
+          console.log(`[DISCORD SYNC] -channel #${channel.name} (${channel.id}) — orphan`);
+        } catch (err) {
+          console.warn(`[DISCORD SYNC] Could not delete orphan channel ${channel.id}: ${err.message}`);
+          continue;
+        }
+
+        for (const roleId of candidateRoleIds) {
+          if (expectedRoleIds.has(roleId)) continue;
+          const role = guild.roles.cache.get(roleId) || await guild.roles.fetch(roleId).catch(() => null);
+          if (!role) continue;
+          try {
+            await role.delete('Roster sync: team no longer in active event');
+            console.log(`[DISCORD SYNC] -role @${role.name} (${role.id}) — orphan`);
+          } catch (err) {
+            console.warn(`[DISCORD SYNC] Could not delete orphan role ${role.id}: ${err.message}`);
+          }
+        }
+      }
+    }
+
+    async function syncDiscordRoster(nexusBaseUrl, teamId) {
+      if (!nexusBaseUrl) {
+        console.warn('[DISCORD SYNC] No Nexus base URL provided — cannot fetch roster.');
+        return;
+      }
       if (rosterSyncInFlight) {
         console.log('[DISCORD SYNC] Sync already in flight, skipping.');
         return;
       }
       rosterSyncInFlight = true;
       try {
-        const data = await fetchRosterData(teamId || null);
+        const data = await fetchRosterData(nexusBaseUrl, teamId || null);
         if (!data) return;
         if (!data.teamChannelCategoryId) {
-          console.log('[DISCORD SYNC] TeamChannelCategoryId not configured in Nexus General settings — skipping.');
-          return;
-        }
-        if (!Array.isArray(data.teams) || data.teams.length === 0) {
-          console.log('[DISCORD SYNC] No teams in roster payload — nothing to do.');
+          console.log(`[DISCORD SYNC] TeamChannelCategoryId not configured at ${nexusBaseUrl} — skipping.`);
           return;
         }
 
@@ -565,39 +621,69 @@ module.exports = {
         }
 
         if (!targetGuild) {
-          console.warn(`[DISCORD SYNC] No guild contains TeamChannelCategoryId=${data.teamChannelCategoryId}. Bot may not be in the right guild, or the ID is wrong.`);
+          console.warn(`[DISCORD SYNC] No guild contains TeamChannelCategoryId=${data.teamChannelCategoryId} (from ${nexusBaseUrl}). Bot may not be in the right guild, or the ID is wrong.`);
           return;
         }
 
-        console.log(`[DISCORD SYNC] Syncing ${data.teams.length} team(s) in guild "${targetGuild.name}" (${targetGuild.id}).`);
-        for (const team of data.teams) {
+        const teams = Array.isArray(data.teams) ? data.teams : [];
+        console.log(`[DISCORD SYNC] Syncing ${teams.length} team(s) from ${nexusBaseUrl} in guild "${targetGuild.name}" (${targetGuild.id}).`);
+
+        const expectedChannelIds = new Set();
+        const expectedRoleIds = new Set();
+        for (const team of teams) {
           try {
-            await syncTeamInGuild(targetGuild, team, targetCategory);
+            const result = await syncTeamInGuild(targetGuild, team, targetCategory, nexusBaseUrl);
+            if (result?.roleId) expectedRoleIds.add(result.roleId);
+            if (result?.channelId) expectedChannelIds.add(result.channelId);
           } catch (err) {
             console.error(`[DISCORD SYNC] Team ${team.id} (${team.name}) failed:`, err.message);
           }
         }
-        console.log('[DISCORD SYNC] Sync complete.');
+
+        // Orphan sweep — only on a full sync. Single-team triggers leave other teams alone.
+        if (!teamId) {
+          await cleanupOrphans(targetGuild, targetCategory, expectedChannelIds, expectedRoleIds);
+        }
+
+        console.log(`[DISCORD SYNC] Sync from ${nexusBaseUrl} complete.`);
       } finally {
         rosterSyncInFlight = false;
       }
     }
 
     // Manual trigger endpoint — Nexus calls this on team-edit and on the manual button.
+    // Body: { teamId: number|null, nexusBaseUrl: "https://frag.to" }
     app.post('/sync-discord-roster', authenticateApiKey, async (req, res) => {
       const teamId = req.body && Number.isInteger(req.body.teamId) ? req.body.teamId : null;
+      const nexusBaseUrl = req.body && typeof req.body.nexusBaseUrl === 'string'
+        ? req.body.nexusBaseUrl.replace(/\/+$/, '')
+        : null;
+      if (!nexusBaseUrl) {
+        return res.status(400).json({ error: 'Missing nexusBaseUrl in request body' });
+      }
+      rememberNexusBaseUrl(nexusBaseUrl);
       // Fire-and-forget so Nexus doesn't block on the actual sync.
-      syncDiscordRoster(teamId).catch(err => console.error('[DISCORD SYNC] Background sync failed:', err));
-      return res.json({ accepted: true, teamId });
+      syncDiscordRoster(nexusBaseUrl, teamId).catch(err => console.error('[DISCORD SYNC] Background sync failed:', err));
+      return res.json({ accepted: true, teamId, nexusBaseUrl });
     });
 
-    // Periodic sweep (independent of Nexus). Catches drift, manual Discord edits, missed pushes.
-    // Initial delay gives the Discord client time to populate its guild/member cache after boot.
-    setTimeout(() => {
-      syncDiscordRoster().catch(err => console.error('[DISCORD SYNC] Initial sync failed:', err));
-    }, 60 * 1000);
+    // Periodic sweep — covers every Nexus instance we've seen. Catches drift, manual Discord edits,
+    // missed pushes. Skipped until we've heard from at least one Nexus (so we know its URL).
+    async function periodicSweep() {
+      if (knownNexusBaseUrls.size === 0) {
+        console.log('[DISCORD SYNC] Periodic sweep skipped — no Nexus base URLs recorded yet.');
+        return;
+      }
+      for (const baseUrl of knownNexusBaseUrls) {
+        try {
+          await syncDiscordRoster(baseUrl, null);
+        } catch (err) {
+          console.error(`[DISCORD SYNC] Periodic sweep for ${baseUrl} failed:`, err.message);
+        }
+      }
+    }
     setInterval(() => {
-      syncDiscordRoster().catch(err => console.error('[DISCORD SYNC] Scheduled sync failed:', err));
+      periodicSweep().catch(err => console.error('[DISCORD SYNC] Periodic sweep error:', err));
     }, 30 * 60 * 1000);
 
     // **Start HTTPS Server with PFX Certificate**
