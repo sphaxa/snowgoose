@@ -69,10 +69,10 @@ module.exports = {
 
         servers.forEach(server => {
           const [ip, port] = server.address.split(':');
-          const serverData = { 
-            name: server.name, 
-            ip, 
-            port: parseInt(port), 
+          const serverData = {
+            name: server.name,
+            ip,
+            port: parseInt(port),
             password: server.rconPassword,
             sshUsername: server.machineUsername,
             sshPassword: server.machinePassword
@@ -190,7 +190,7 @@ module.exports = {
 
         if (command === "details") {
           fullCommand = "TERM=xterm-256color " + fullCommand
-            + `details | grep Status | tail -1 | awk -F':\\t' '{print $2}'`;
+              + `details | grep Status | tail -1 | awk -F':\\t' '{print $2}'`;
         } else {
           fullCommand += command;
         }
@@ -226,7 +226,7 @@ module.exports = {
 
       return output;
     }
-    
+
     // **Middleware for API Key Authentication**
     function authenticateApiKey(req, res, next) {
       const requestApiKey = req.headers['x-api-key'];
@@ -337,10 +337,10 @@ module.exports = {
     function sanitizeChannelName(name) {
       // Discord channel names: lowercase, alphanumeric/dash/underscore, max 100.
       return (name || '')
-        .toLowerCase()
-        .replace(/\s+/g, '-')
-        .replace(/[^a-z0-9_-]/g, '')
-        .slice(0, 100) || 'team';
+          .toLowerCase()
+          .replace(/\s+/g, '-')
+          .replace(/[^a-z0-9_-]/g, '')
+          .slice(0, 100) || 'team';
     }
 
     // Snowgoose serves multiple Nexus universes (frag.to, 2.frag.to, …). Each Nexus instance includes
@@ -357,8 +357,8 @@ module.exports = {
     async function fetchRosterData(baseUrl, teamId) {
       try {
         const url = teamId
-          ? `${baseUrl}/api/discord/roster-data?teamId=${teamId}`
-          : `${baseUrl}/api/discord/roster-data`;
+            ? `${baseUrl}/api/discord/roster-data?teamId=${teamId}`
+            : `${baseUrl}/api/discord/roster-data`;
         const response = await axios.get(url, {
           headers: { 'X-Api-Key': process.env.API_KEY },
           timeout: 15000
@@ -373,12 +373,12 @@ module.exports = {
     async function reportTeamIds(baseUrl, teamId, ids) {
       try {
         await axios.post(
-          `${baseUrl}/api/discord/team/${teamId}/discord-ids`,
-          ids,
-          {
-            headers: { 'X-Api-Key': process.env.API_KEY, 'Content-Type': 'application/json' },
-            timeout: 10000
-          }
+            `${baseUrl}/api/discord/team/${teamId}/discord-ids`,
+            ids,
+            {
+              headers: { 'X-Api-Key': process.env.API_KEY, 'Content-Type': 'application/json' },
+              timeout: 10000
+            }
         );
       } catch (error) {
         console.warn(`[DISCORD SYNC] Failed to report IDs for team ${teamId} to ${baseUrl}:`, error.message);
@@ -388,12 +388,12 @@ module.exports = {
     async function reportMatchroomId(baseUrl, matchroomId, channelId) {
       try {
         await axios.post(
-          `${baseUrl}/api/discord/matchroom/${matchroomId}/discord-id`,
-          { discordChannelId: channelId },
-          {
-            headers: { 'X-Api-Key': process.env.API_KEY, 'Content-Type': 'application/json' },
-            timeout: 10000
-          }
+            `${baseUrl}/api/discord/matchroom/${matchroomId}/discord-id`,
+            { discordChannelId: channelId },
+            {
+              headers: { 'X-Api-Key': process.env.API_KEY, 'Content-Type': 'application/json' },
+              timeout: 10000
+            }
         );
       } catch (error) {
         console.warn(`[DISCORD SYNC] Failed to report matchroom ${matchroomId} channel to ${baseUrl}:`, error.message);
@@ -403,12 +403,12 @@ module.exports = {
     async function reportServerRelay(baseUrl, serverId, body) {
       try {
         await axios.post(
-          `${baseUrl}/api/discord/server/${serverId}/relay`,
-          body,
-          {
-            headers: { 'X-Api-Key': process.env.API_KEY, 'Content-Type': 'application/json' },
-            timeout: 10000
-          }
+            `${baseUrl}/api/discord/server/${serverId}/relay`,
+            body,
+            {
+              headers: { 'X-Api-Key': process.env.API_KEY, 'Content-Type': 'application/json' },
+              timeout: 10000
+            }
         );
       } catch (error) {
         console.warn(`[DISCORD SYNC] Failed to report relay IDs for server ${serverId} to ${baseUrl}:`, error.message);
@@ -426,7 +426,7 @@ module.exports = {
       // 1) Stored ID — fast path, survives rename
       if (team.discordRoleId) {
         const existing = guild.roles.cache.get(team.discordRoleId)
-          || await guild.roles.fetch(team.discordRoleId).catch(() => null);
+            || await guild.roles.fetch(team.discordRoleId).catch(() => null);
         if (existing) {
           if (existing.name !== team.name) {
             try { await existing.setName(team.name); }
@@ -458,7 +458,7 @@ module.exports = {
       // 1) Stored ID
       if (team.discordChannelId) {
         const existing = guild.channels.cache.get(team.discordChannelId)
-          || await guild.channels.fetch(team.discordChannelId).catch(() => null);
+            || await guild.channels.fetch(team.discordChannelId).catch(() => null);
         if (existing) {
           if (existing.parentId !== category.id) {
             try { await existing.setParent(category.id, { lockPermissions: false }); }
@@ -473,7 +473,7 @@ module.exports = {
       }
       // 2) Name match within the category
       const byName = category.children?.cache?.find(c => c.name === desiredName)
-        || guild.channels.cache.find(c => c.parentId === category.id && c.name === desiredName);
+          || guild.channels.cache.find(c => c.parentId === category.id && c.name === desiredName);
       if (byName) return { channel: byName, created: false };
       // 3) Create
       try {
@@ -551,8 +551,8 @@ module.exports = {
         const url = `${nexusBaseUrl}/matchroom/${matchroom.id}`;
         // Use Discord's relative timestamp tag so it renders correctly in every viewer's timezone.
         const startSeconds = matchroom.startTimeUtc
-          ? Math.floor(new Date(matchroom.startTimeUtc).getTime() / 1000)
-          : null;
+            ? Math.floor(new Date(matchroom.startTimeUtc).getTime() / 1000)
+            : null;
         const vetoStart = startSeconds ? `<t:${startSeconds}:F> (<t:${startSeconds}:R>)` : 'TBD';
         const embed = buildMatchroomWelcomeEmbed({
           team1: matchroom.team1Name,
@@ -562,7 +562,19 @@ module.exports = {
           role1: role1 ? `<@&${role1.id}>` : `**${matchroom.team1Name}**`,
           role2: role2 ? `<@&${role2.id}>` : `**${matchroom.team2Name}**`
         });
-        await channel.send({ embeds: [embed] });
+
+        // Embed mentions don't ping. Put role mentions in `content` and whitelist them in
+        // allowedMentions so they ping even if the role's "mentionable" flag is off.
+        const mentionRoleIds = [role1?.id, role2?.id].filter(Boolean);
+        const content = mentionRoleIds.length
+            ? mentionRoleIds.map(id => `<@&${id}>`).join(' ')
+            : undefined;
+
+        await channel.send({
+          content,
+          embeds: [embed],
+          allowedMentions: { roles: mentionRoleIds }
+        });
       } catch (err) {
         console.warn(`[DISCORD SYNC] Could not post matchroom welcome embed in ${channel.id}: ${err.message}`);
       }
@@ -593,7 +605,7 @@ module.exports = {
       // 1) Stored ID
       if (matchroom.discordChannelId) {
         const existing = guild.channels.cache.get(matchroom.discordChannelId)
-          || await guild.channels.fetch(matchroom.discordChannelId).catch(() => null);
+            || await guild.channels.fetch(matchroom.discordChannelId).catch(() => null);
         if (existing) {
           if (existing.parentId !== category.id) {
             try { await existing.setParent(category.id, { lockPermissions: false }); }
@@ -766,7 +778,7 @@ module.exports = {
       // guild from the roster sync target if an admin configured it that way).
       for (const guild of client.guilds.cache.values()) {
         const ch = guild.channels.cache.get(channelId)
-          || await guild.channels.fetch(channelId).catch(() => null);
+            || await guild.channels.fetch(channelId).catch(() => null);
         if (!ch) continue;
         try {
           await ch.delete('Match teardown: relay no longer needed');
@@ -810,7 +822,7 @@ module.exports = {
       // Normalize roster usernames once (lowercase, trimmed). Discord global usernames are
       // case-insensitive, so match on lowercase.
       const wantedSet = new Set(
-        (discordUsernames || []).map(u => (u || '').trim().toLowerCase()).filter(Boolean)
+          (discordUsernames || []).map(u => (u || '').trim().toLowerCase()).filter(Boolean)
       );
 
       // Add: search the guild for each wanted username and grant the role.
@@ -818,8 +830,8 @@ module.exports = {
         try {
           const candidates = await guild.members.fetch({ query: username, limit: 5 });
           const member = candidates.find(m =>
-            (m.user?.username || '').toLowerCase() === username
-            || (m.user?.tag || '').toLowerCase() === username
+              (m.user?.username || '').toLowerCase() === username
+              || (m.user?.tag || '').toLowerCase() === username
           );
           if (!member) {
             console.log(`[DISCORD SYNC] No guild member matched '${username}' in ${guild.name}`);
@@ -1021,9 +1033,9 @@ module.exports = {
           const relayCategory = findCategoryInGuild(targetGuild, data.relayCategoryId);
           if (relayCategory) {
             const expectedRelayChannelIds = new Set(
-              Array.isArray(data.expectedRelayChannelIds)
-                ? data.expectedRelayChannelIds.filter(id => typeof id === 'string' && id)
-                : []
+                Array.isArray(data.expectedRelayChannelIds)
+                    ? data.expectedRelayChannelIds.filter(id => typeof id === 'string' && id)
+                    : []
             );
             await cleanupRelayOrphans(targetGuild, relayCategory, expectedRelayChannelIds);
           } else {
@@ -1070,7 +1082,7 @@ module.exports = {
         return res.status(400).json({ error: 'channelId is required' });
       }
       deleteRelayChannel(body.channelId)
-        .catch(err => console.error('[DISCORD SYNC] Relay delete failed:', err));
+          .catch(err => console.error('[DISCORD SYNC] Relay delete failed:', err));
       return res.json({ accepted: true, channelId: body.channelId });
     });
 
@@ -1079,8 +1091,8 @@ module.exports = {
     app.post('/sync-discord-roster', authenticateApiKey, async (req, res) => {
       const teamId = req.body && Number.isInteger(req.body.teamId) ? req.body.teamId : null;
       const nexusBaseUrl = req.body && typeof req.body.nexusBaseUrl === 'string'
-        ? req.body.nexusBaseUrl.replace(/\/+$/, '')
-        : null;
+          ? req.body.nexusBaseUrl.replace(/\/+$/, '')
+          : null;
       if (!nexusBaseUrl) {
         return res.status(400).json({ error: 'Missing nexusBaseUrl in request body' });
       }
@@ -1133,8 +1145,8 @@ module.exports = {
           const newChannelName = content.split('sg_relay&hostname')[1].trim();
           if (newChannelName) {
             message.channel.setName(newChannelName)
-              .then(updated => console.log(`[SERVERSTATE MODULE] Updated channel name to ${updated.name}`))
-              .catch(error => console.error('[SERVERSTATE MODULE] Failed to update channel name:', error));
+                .then(updated => console.log(`[SERVERSTATE MODULE] Updated channel name to ${updated.name}`))
+                .catch(error => console.error('[SERVERSTATE MODULE] Failed to update channel name:', error));
           }
         }
       }
