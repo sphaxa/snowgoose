@@ -534,7 +534,7 @@ module.exports = {
     // sendMatchroomWelcomeEmbed: {team1}, {team2}, {url}, {vetoStart} (Discord <t:…> tag).
     function buildMatchroomWelcomeEmbed({ team1, team2, url, vetoStart, role1, role2 }) {
       return {
-        color: 0xED4245, // Discord red — separates matchroom from team welcome
+        color: 0x000000,
         title: `${team1} vs ${team2}`,
         description: `Your matchroom is live. Head to ${url} to access vetoes, server info, and chat.`,
         fields: [
@@ -1120,7 +1120,7 @@ module.exports = {
         const content = message.content;
         if (content.startsWith('sg_relay&hostname')) {
           const newCategoryName = content.split('sg_relay&hostname')[1].trim();
-          if (newCategoryName) {
+          if (false) { // disabled category renaming for now
             const categoryChannel = message.channel.parent;
             updateCategory(categoryChannel, newCategoryName);
           }
