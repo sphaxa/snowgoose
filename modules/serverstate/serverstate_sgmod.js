@@ -768,6 +768,12 @@ module.exports = {
         matchroomWebhook: webhookUrl
       });
 
+      // Warm channelServers / hardcodedChannelIds with the new channel ID so the messageCreate
+      // handler picks up user messages immediately. Without this, the cache only refreshes on the
+      // 5-minute sweep (line 100) — meaning the first user message in a freshly-created relay
+      // channel gets silently dropped until then.
+      await refreshServerData();
+
       console.log(`[DISCORD SYNC] +relay channel #${channel.name} (${channel.id}) for server ${serverId}`);
       return { channelId: channel.id, webhookUrl };
     }
