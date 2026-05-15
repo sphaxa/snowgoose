@@ -831,11 +831,11 @@ module.exports = {
           (discordUsernames || []).map(u => (u || '').trim().toLowerCase()).filter(Boolean)
       );
 
-      // Add: search the guild for each wanted username and grant the role.
+      // Resolve wanted usernames against the prefetched guild member cache (populated once
+      // per sync at the top of syncDiscordRoster). No per-username API calls.
       for (const username of wantedSet) {
         try {
-          const candidates = await guild.members.fetch({ query: username, limit: 5 });
-          const member = candidates.find(m =>
+          const member = guild.members.cache.find(m =>
               (m.user?.username || '').toLowerCase() === username
               || (m.user?.tag || '').toLowerCase() === username
           );
@@ -983,6 +983,15 @@ module.exports = {
         if (!targetGuild) {
           console.warn(`[DISCORD SYNC] No guild contains TeamChannelCategoryId=${data.teamChannelCategoryId} (from ${nexusBaseUrl}). Bot may not be in the right guild, or the ID is wrong.`);
           return;
+        }
+
+        // Bulk-fetch the guild member list once so syncRoleMembers can resolve usernames
+        // from the cache instead of hitting the rate-limited search endpoint per player.
+        // Requires the GuildMembers privileged intent.
+        try {
+          await targetGuild.members.fetch();
+        } catch (err) {
+          console.warn(`[DISCORD SYNC] Bulk member fetch failed for guild "${targetGuild.name}": ${err.message}. Falling back to per-username lookups will be slow.`);
         }
 
         const teams = Array.isArray(data.teams) ? data.teams : [];
