@@ -348,6 +348,10 @@ module.exports = {
     // can hit all of them, not just the most recent.
     const knownNexusBaseUrls = new Set();
     let rosterSyncInFlight = false;
+    // Triggers that arrived while a sync was in flight. Drained as full syncs once the current
+    // sync finishes, so 20 rapid creates collapse into one in-flight sync + one re-run instead of
+    // 19 dropped triggers. Keyed by nexusBaseUrl so multi-universe triggers all get serviced.
+    const pendingSyncUrls = new Set();
 
     function rememberNexusBaseUrl(baseUrl) {
       if (typeof baseUrl !== 'string' || !baseUrl.trim()) return;
@@ -956,112 +960,127 @@ module.exports = {
         return;
       }
       if (rosterSyncInFlight) {
-        console.log('[DISCORD SYNC] Sync already in flight, skipping.');
+        // Coalesce: remember this URL, run a full sync for it once the current one finishes.
+        // Set dedupes — N triggers for the same URL mid-sync collapse into one re-run.
+        pendingSyncUrls.add(nexusBaseUrl);
+        console.log(`[DISCORD SYNC] Sync in flight; queued re-run for ${nexusBaseUrl}.`);
         return;
       }
       rosterSyncInFlight = true;
       try {
-        const data = await fetchRosterData(nexusBaseUrl, teamId || null);
-        if (!data) return;
-        if (!data.teamChannelCategoryId) {
-          console.log(`[DISCORD SYNC] TeamChannelCategoryId not configured at ${nexusBaseUrl} — skipping.`);
-          return;
+        await runOneRosterSync(nexusBaseUrl, teamId);
+        // Drain any triggers that arrived while we were busy. Always full syncs — a per-team
+        // request is a subset of a full sync, so re-running full covers both cases.
+        while (pendingSyncUrls.size > 0) {
+          const next = pendingSyncUrls.values().next().value;
+          pendingSyncUrls.delete(next);
+          console.log(`[DISCORD SYNC] Running queued re-sync for ${next}.`);
+          await runOneRosterSync(next, null);
         }
-
-        // Find the (one) guild where the configured team-channel category lives.
-        let targetGuild = null;
-        let targetCategory = null;
-        for (const guild of client.guilds.cache.values()) {
-          const cat = findCategoryInGuild(guild, data.teamChannelCategoryId);
-          if (cat) {
-            targetGuild = guild;
-            targetCategory = cat;
-            break;
-          }
-        }
-
-        if (!targetGuild) {
-          console.warn(`[DISCORD SYNC] No guild contains TeamChannelCategoryId=${data.teamChannelCategoryId} (from ${nexusBaseUrl}). Bot may not be in the right guild, or the ID is wrong.`);
-          return;
-        }
-
-        // Bulk-fetch the guild member list once so syncRoleMembers can resolve usernames
-        // from the cache instead of hitting the rate-limited search endpoint per player.
-        // Requires the GuildMembers privileged intent.
-        try {
-          await targetGuild.members.fetch();
-        } catch (err) {
-          console.warn(`[DISCORD SYNC] Bulk member fetch failed for guild "${targetGuild.name}": ${err.message}. Falling back to per-username lookups will be slow.`);
-        }
-
-        const teams = Array.isArray(data.teams) ? data.teams : [];
-        console.log(`[DISCORD SYNC] Syncing ${teams.length} team(s) from ${nexusBaseUrl} in guild "${targetGuild.name}" (${targetGuild.id}).`);
-
-        const expectedChannelIds = new Set();
-        const expectedRoleIds = new Set();
-        // teamId → resolved Discord role ID, used by matchroom pass to find roles for teams that
-        // were freshly created in this same sync (so the DB writeback hasn't propagated yet).
-        const teamRolesById = new Map();
-        for (const team of teams) {
-          try {
-            const result = await syncTeamInGuild(targetGuild, team, targetCategory, nexusBaseUrl, data.activeEventName);
-            if (result?.roleId) {
-              expectedRoleIds.add(result.roleId);
-              teamRolesById.set(team.id, result.roleId);
-            }
-            if (result?.channelId) expectedChannelIds.add(result.channelId);
-          } catch (err) {
-            console.error(`[DISCORD SYNC] Team ${team.id} (${team.name}) failed:`, err.message);
-          }
-        }
-
-        // Orphan sweep for team category — only on a full sync.
-        if (!teamId) {
-          await cleanupOrphans(targetGuild, targetCategory, expectedChannelIds, expectedRoleIds);
-        }
-
-        // ── Matchroom pass — full syncs only. Per-team triggers don't carry matchrooms.
-        const matchrooms = Array.isArray(data.matchrooms) ? data.matchrooms : [];
-        if (!teamId && data.matchroomCategoryId) {
-          const matchroomCategory = findCategoryInGuild(targetGuild, data.matchroomCategoryId);
-          if (!matchroomCategory) {
-            console.warn(`[DISCORD SYNC] MatchroomCategoryId=${data.matchroomCategoryId} not found in guild "${targetGuild.name}" — skipping matchroom pass.`);
-          } else {
-            console.log(`[DISCORD SYNC] Syncing ${matchrooms.length} matchroom(s).`);
-            const expectedMatchroomChannelIds = new Set();
-            for (const mr of matchrooms) {
-              try {
-                const result = await syncMatchroomInGuild(targetGuild, mr, matchroomCategory, nexusBaseUrl, teamRolesById);
-                if (result?.channelId) expectedMatchroomChannelIds.add(result.channelId);
-              } catch (err) {
-                console.error(`[DISCORD SYNC] Matchroom ${mr.id} failed:`, err.message);
-              }
-            }
-            await cleanupMatchroomOrphans(targetGuild, matchroomCategory, expectedMatchroomChannelIds);
-          }
-        }
-
-        // ── Relay orphan sweep — full syncs only. We never CREATE relays here (that happens on
-        // server provision). We just delete any channel under the relay category that doesn't
-        // correspond to a current Server.MatchroomId.
-        if (!teamId && data.relayCategoryId) {
-          const relayCategory = findCategoryInGuild(targetGuild, data.relayCategoryId);
-          if (relayCategory) {
-            const expectedRelayChannelIds = new Set(
-                Array.isArray(data.expectedRelayChannelIds)
-                    ? data.expectedRelayChannelIds.filter(id => typeof id === 'string' && id)
-                    : []
-            );
-            await cleanupRelayOrphans(targetGuild, relayCategory, expectedRelayChannelIds);
-          } else {
-            console.warn(`[DISCORD SYNC] RelayCategoryId=${data.relayCategoryId} not found in guild "${targetGuild.name}" — skipping relay orphan sweep.`);
-          }
-        }
-
-        console.log(`[DISCORD SYNC] Sync from ${nexusBaseUrl} complete.`);
       } finally {
         rosterSyncInFlight = false;
       }
+    }
+
+    async function runOneRosterSync(nexusBaseUrl, teamId) {
+      const data = await fetchRosterData(nexusBaseUrl, teamId || null);
+      if (!data) return;
+      if (!data.teamChannelCategoryId) {
+        console.log(`[DISCORD SYNC] TeamChannelCategoryId not configured at ${nexusBaseUrl} — skipping.`);
+        return;
+      }
+
+      // Find the (one) guild where the configured team-channel category lives.
+      let targetGuild = null;
+      let targetCategory = null;
+      for (const guild of client.guilds.cache.values()) {
+        const cat = findCategoryInGuild(guild, data.teamChannelCategoryId);
+        if (cat) {
+          targetGuild = guild;
+          targetCategory = cat;
+          break;
+        }
+      }
+
+      if (!targetGuild) {
+        console.warn(`[DISCORD SYNC] No guild contains TeamChannelCategoryId=${data.teamChannelCategoryId} (from ${nexusBaseUrl}). Bot may not be in the right guild, or the ID is wrong.`);
+        return;
+      }
+
+      // Bulk-fetch the guild member list once so syncRoleMembers can resolve usernames
+      // from the cache instead of hitting the rate-limited search endpoint per player.
+      // Requires the GuildMembers privileged intent.
+      try {
+        await targetGuild.members.fetch();
+      } catch (err) {
+        console.warn(`[DISCORD SYNC] Bulk member fetch failed for guild "${targetGuild.name}": ${err.message}. Falling back to per-username lookups will be slow.`);
+      }
+
+      const teams = Array.isArray(data.teams) ? data.teams : [];
+      console.log(`[DISCORD SYNC] Syncing ${teams.length} team(s) from ${nexusBaseUrl} in guild "${targetGuild.name}" (${targetGuild.id}).`);
+
+      const expectedChannelIds = new Set();
+      const expectedRoleIds = new Set();
+      // teamId → resolved Discord role ID, used by matchroom pass to find roles for teams that
+      // were freshly created in this same sync (so the DB writeback hasn't propagated yet).
+      const teamRolesById = new Map();
+      for (const team of teams) {
+        try {
+          const result = await syncTeamInGuild(targetGuild, team, targetCategory, nexusBaseUrl, data.activeEventName);
+          if (result?.roleId) {
+            expectedRoleIds.add(result.roleId);
+            teamRolesById.set(team.id, result.roleId);
+          }
+          if (result?.channelId) expectedChannelIds.add(result.channelId);
+        } catch (err) {
+          console.error(`[DISCORD SYNC] Team ${team.id} (${team.name}) failed:`, err.message);
+        }
+      }
+
+      // Orphan sweep for team category — only on a full sync.
+      if (!teamId) {
+        await cleanupOrphans(targetGuild, targetCategory, expectedChannelIds, expectedRoleIds);
+      }
+
+      // ── Matchroom pass — full syncs only. Per-team triggers don't carry matchrooms.
+      const matchrooms = Array.isArray(data.matchrooms) ? data.matchrooms : [];
+      if (!teamId && data.matchroomCategoryId) {
+        const matchroomCategory = findCategoryInGuild(targetGuild, data.matchroomCategoryId);
+        if (!matchroomCategory) {
+          console.warn(`[DISCORD SYNC] MatchroomCategoryId=${data.matchroomCategoryId} not found in guild "${targetGuild.name}" — skipping matchroom pass.`);
+        } else {
+          console.log(`[DISCORD SYNC] Syncing ${matchrooms.length} matchroom(s).`);
+          const expectedMatchroomChannelIds = new Set();
+          for (const mr of matchrooms) {
+            try {
+              const result = await syncMatchroomInGuild(targetGuild, mr, matchroomCategory, nexusBaseUrl, teamRolesById);
+              if (result?.channelId) expectedMatchroomChannelIds.add(result.channelId);
+            } catch (err) {
+              console.error(`[DISCORD SYNC] Matchroom ${mr.id} failed:`, err.message);
+            }
+          }
+          await cleanupMatchroomOrphans(targetGuild, matchroomCategory, expectedMatchroomChannelIds);
+        }
+      }
+
+      // ── Relay orphan sweep — full syncs only. We never CREATE relays here (that happens on
+      // server provision). We just delete any channel under the relay category that doesn't
+      // correspond to a current Server.MatchroomId.
+      if (!teamId && data.relayCategoryId) {
+        const relayCategory = findCategoryInGuild(targetGuild, data.relayCategoryId);
+        if (relayCategory) {
+          const expectedRelayChannelIds = new Set(
+              Array.isArray(data.expectedRelayChannelIds)
+                  ? data.expectedRelayChannelIds.filter(id => typeof id === 'string' && id)
+                  : []
+          );
+          await cleanupRelayOrphans(targetGuild, relayCategory, expectedRelayChannelIds);
+        } else {
+          console.warn(`[DISCORD SYNC] RelayCategoryId=${data.relayCategoryId} not found in guild "${targetGuild.name}" — skipping relay orphan sweep.`);
+        }
+      }
+
+      console.log(`[DISCORD SYNC] Sync from ${nexusBaseUrl} complete.`);
     }
 
     // Relay create — fired by Nexus after a server has been provisioned and its address resolved.
