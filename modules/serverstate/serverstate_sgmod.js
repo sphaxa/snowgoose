@@ -875,6 +875,38 @@ module.exports = {
       }
     }
 
+    // Grants the "Player" role to anyone holding at least one team role, removes it from anyone
+    // who no longer does. The role is admin-managed (looked up by name, not created here) — if it's
+    // missing we log and bail rather than guess what its permissions should be.
+    async function syncPlayerRole(guild, expectedTeamRoleIds) {
+      const playerRole = guild.roles.cache.find(r => r.name === 'Player');
+      if (!playerRole) {
+        console.warn(`[DISCORD SYNC] No role named 'Player' found in guild "${guild.name}" — skipping Player role sync.`);
+        return;
+      }
+
+      for (const member of guild.members.cache.values()) {
+        const hasTeamRole = member.roles.cache.some(r => expectedTeamRoleIds.has(r.id));
+        const hasPlayerRole = member.roles.cache.has(playerRole.id);
+
+        if (hasTeamRole && !hasPlayerRole) {
+          try {
+            await member.roles.add(playerRole, 'Roster sync: holds a team role');
+            console.log(`[DISCORD SYNC] +${member.user.username} → Player`);
+          } catch (err) {
+            console.warn(`[DISCORD SYNC] Could not grant Player to ${member.user?.username}: ${err.message}`);
+          }
+        } else if (!hasTeamRole && hasPlayerRole) {
+          try {
+            await member.roles.remove(playerRole, 'Roster sync: no team roles');
+            console.log(`[DISCORD SYNC] -${member.user.username} → Player`);
+          } catch (err) {
+            console.warn(`[DISCORD SYNC] Could not remove Player from ${member.user?.username}: ${err.message}`);
+          }
+        }
+      }
+    }
+
     async function syncTeamInGuild(guild, team, category, nexusBaseUrl, eventName) {
       if (!team.name) {
         console.warn(`[DISCORD SYNC] Skipping team ${team.id} — no name.`);
@@ -1040,6 +1072,10 @@ module.exports = {
       // Orphan sweep for team category — only on a full sync.
       if (!teamId) {
         await cleanupOrphans(targetGuild, targetCategory, expectedChannelIds, expectedRoleIds);
+        // "Player" umbrella role — granted to anyone holding at least one team role, removed from
+        // anyone who no longer holds one. Full syncs only because a per-team trigger only sees one
+        // team's role in expectedRoleIds and would wrongly strip Player from members on other teams.
+        await syncPlayerRole(targetGuild, expectedRoleIds);
       }
 
       // ── Matchroom pass — full syncs only. Per-team triggers don't carry matchrooms.
