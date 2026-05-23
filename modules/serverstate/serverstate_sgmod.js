@@ -802,10 +802,23 @@ module.exports = {
       return false;
     }
 
+    // Channels created within this window are skipped during orphan cleanup. createRelayChannel
+    // creates the Discord channel before posting the writeback to Nexus, so there's a ~1s gap
+    // where the channel exists but Nexus's expectedRelayChannelIds list doesn't include it yet.
+    // A concurrent sync (Nexus-triggered or our own 30-min periodicSweep) would otherwise see
+    // it as unexpected and delete it before the writeback can land. 60s leaves plenty of
+    // headroom for slow Nexus writebacks while still cleaning up genuine orphans promptly.
+    const RELAY_ORPHAN_GRACE_MS = 60_000;
+
     async function cleanupRelayOrphans(guild, category, expectedChannelIds) {
       const channelsInCategory = guild.channels.cache.filter(c => c.parentId === category.id);
+      const now = Date.now();
       for (const channel of channelsInCategory.values()) {
         if (expectedChannelIds.has(channel.id)) continue;
+        if (channel.createdTimestamp && (now - channel.createdTimestamp) < RELAY_ORPHAN_GRACE_MS) {
+          console.log(`[DISCORD SYNC] Skipping relay channel #${channel.name} (${channel.id}) — within ${RELAY_ORPHAN_GRACE_MS}ms grace period.`);
+          continue;
+        }
         try {
           await channel.delete('Relay sync: server no longer exists');
           console.log(`[DISCORD SYNC] -relay channel #${channel.name} (${channel.id}) — orphan`);
