@@ -847,18 +847,41 @@ module.exports = {
           (discordSnowflakes || []).map(s => (s || '').trim()).filter(Boolean)
       );
 
-      // Resolve wanted snowflakes against the prefetched guild member cache (populated once
-      // per sync at the top of syncDiscordRoster). Direct .get(id) — no scan, no API calls.
+      // Look up the umbrella Player role once. Granting it alongside the team role here means
+      // per-team-triggered syncs also get it right; the full-sync syncPlayerRole still handles
+      // the orphan-removal sweep (which a per-team trigger can't safely do).
+      const playerRole = guild.roles.cache.find(r => r.name === 'Player') || null;
+
+      // Resolve wanted snowflakes via cache first; fall back to per-ID fetch when the cache miss
+      // is from a failed bulk warm-up (GuildMembers privileged intent off, etc). Single-member
+      // fetch doesn't require the privileged intent, so this path works in either configuration.
       for (const snowflake of wantedSet) {
         try {
-          const member = guild.members.cache.get(snowflake);
+          let member = guild.members.cache.get(snowflake);
           if (!member) {
-            console.log(`[DISCORD SYNC] No guild member matched snowflake '${snowflake}' in ${guild.name}`);
-            continue;
+            try {
+              member = await guild.members.fetch(snowflake);
+            } catch (fetchErr) {
+              // 10007 = Unknown Member (user isn't in the guild).
+              if (fetchErr.code === 10007) {
+                console.log(`[DISCORD SYNC] Snowflake '${snowflake}' is not a member of ${guild.name}`);
+              } else {
+                console.warn(`[DISCORD SYNC] Fetch failed for snowflake '${snowflake}':`, fetchErr.message);
+              }
+              continue;
+            }
           }
           if (!member.roles.cache.has(role.id)) {
             await member.roles.add(role, `Roster sync: add to ${role.name}`);
             console.log(`[DISCORD SYNC] +${member.user.username} (${snowflake}) → ${role.name}`);
+          }
+          if (playerRole && !member.roles.cache.has(playerRole.id)) {
+            try {
+              await member.roles.add(playerRole, 'Roster sync: holds a team role');
+              console.log(`[DISCORD SYNC] +${member.user.username} (${snowflake}) → Player`);
+            } catch (addErr) {
+              console.warn(`[DISCORD SYNC] Could not grant Player to ${member.user.username}:`, addErr.message);
+            }
           }
         } catch (err) {
           console.warn(`[DISCORD SYNC] Lookup/add failed for snowflake '${snowflake}':`, err.message);
