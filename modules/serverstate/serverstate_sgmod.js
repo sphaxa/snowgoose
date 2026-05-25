@@ -841,43 +841,38 @@ module.exports = {
       }
     }
 
-    async function syncRoleMembers(guild, role, discordUsernames) {
-      // Normalize roster usernames once (lowercase, trimmed). Discord global usernames are
-      // case-insensitive, so match on lowercase.
+    async function syncRoleMembers(guild, role, discordSnowflakes) {
+      // Snowflakes are numeric Discord user IDs — trimmed, no case folding needed.
       const wantedSet = new Set(
-          (discordUsernames || []).map(u => (u || '').trim().toLowerCase()).filter(Boolean)
+          (discordSnowflakes || []).map(s => (s || '').trim()).filter(Boolean)
       );
 
-      // Resolve wanted usernames against the prefetched guild member cache (populated once
-      // per sync at the top of syncDiscordRoster). No per-username API calls.
-      for (const username of wantedSet) {
+      // Resolve wanted snowflakes against the prefetched guild member cache (populated once
+      // per sync at the top of syncDiscordRoster). Direct .get(id) — no scan, no API calls.
+      for (const snowflake of wantedSet) {
         try {
-          const member = guild.members.cache.find(m =>
-              (m.user?.username || '').toLowerCase() === username
-              || (m.user?.tag || '').toLowerCase() === username
-          );
+          const member = guild.members.cache.get(snowflake);
           if (!member) {
-            console.log(`[DISCORD SYNC] No guild member matched '${username}' in ${guild.name}`);
+            console.log(`[DISCORD SYNC] No guild member matched snowflake '${snowflake}' in ${guild.name}`);
             continue;
           }
           if (!member.roles.cache.has(role.id)) {
             await member.roles.add(role, `Roster sync: add to ${role.name}`);
-            console.log(`[DISCORD SYNC] +${member.user.username} → ${role.name}`);
+            console.log(`[DISCORD SYNC] +${member.user.username} (${snowflake}) → ${role.name}`);
           }
         } catch (err) {
-          console.warn(`[DISCORD SYNC] Lookup/add failed for '${username}':`, err.message);
+          console.warn(`[DISCORD SYNC] Lookup/add failed for snowflake '${snowflake}':`, err.message);
         }
       }
 
-      // Remove: anyone currently holding the role whose username isn't in the wanted set.
+      // Remove: anyone currently holding the role whose snowflake isn't in the wanted set.
       try {
         const holders = role.members; // Collection — populated when GUILD_MEMBERS intent + cache available.
         for (const member of holders.values()) {
-          const uname = (member.user?.username || '').toLowerCase();
-          if (!wantedSet.has(uname)) {
+          if (!wantedSet.has(member.id)) {
             try {
               await member.roles.remove(role, 'Roster sync: not on team');
-              console.log(`[DISCORD SYNC] -${member.user.username} → ${role.name}`);
+              console.log(`[DISCORD SYNC] -${member.user.username} (${member.id}) → ${role.name}`);
             } catch (err) {
               console.warn(`[DISCORD SYNC] Could not remove ${member.user?.username} from ${role.name}: ${err.message}`);
             }
@@ -930,7 +925,7 @@ module.exports = {
       const { channel, created } = await resolveOrCreateChannel(guild, team, category, role);
       if (!channel) return { roleId: role.id, channelId: null };
       await ensureChannelPermissions(channel, guild, role);
-      await syncRoleMembers(guild, role, team.discordUsernames);
+      await syncRoleMembers(guild, role, team.discordSnowflakes);
 
       const resolvedRoleId = role.id;
       const resolvedChannelId = channel.id;
