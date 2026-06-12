@@ -75,7 +75,10 @@ module.exports = {
             port: parseInt(port),
             password: server.rconPassword,
             sshUsername: server.machineUsername,
-            sshPassword: server.machinePassword
+            sshPassword: server.machinePassword,
+            // LinuxGSM control script for this box; Nexus only sets this for non-CS2
+            // boxes (e.g. ts3server for the TeamSpeak machine). Defaults to cs2server.
+            serverScript: server.serverScript || 'cs2server'
           };
 
           // Use matchroomId as the key for channelServers (for message handling)
@@ -186,7 +189,7 @@ module.exports = {
 
         console.log(`[SSH] Connection established to ${server.name}`);
 
-        let fullCommand = "./cs2server ";
+        let fullCommand = `./${server.serverScript || 'cs2server'} `;
 
         if (command === "details") {
           fullCommand = "TERM=xterm-256color " + fullCommand
