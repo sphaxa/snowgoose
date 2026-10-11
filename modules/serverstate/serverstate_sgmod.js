@@ -125,11 +125,38 @@ module.exports = {
       return rconQueues[serverKey];
     }
 
-    // Enqueues an RCON command for a server so concurrent requests don't collide
-    function enqueueRcon(server, command) {
-      console.log(`[SERVERSTATE MODULE] Enqueuing RCON command for ${server.ip}:${server.port} -> ${command}`);
+    // Commands that sit in the queue longer than this are dropped instead of sent.
+    // While a server is offline every connect attempt stalls, so the queue backs up;
+    // without this the whole backlog fires the moment the server comes back.
+    const RCON_MAX_QUEUE_WAIT_MS = 30 * 1000;
+    // Commands waiting to run (not yet started), keyed by ip:port then command string
+    const pendingRcon = {};
+
+    // Enqueues an RCON command for a server so concurrent requests don't collide.
+    // With coalesce, an identical command already waiting for this server is reused
+    // rather than queued again (e.g. repeated status polls during an outage).
+    function enqueueRcon(server, command, { coalesce = false } = {}) {
       const key = `${server.ip}:${server.port}`;
-      const next = getRconQueue(key).then(() => sendRconCommand(server, command));
+      const pending = pendingRcon[key] ??= new Map();
+
+      if (coalesce && pending.has(command)) {
+        console.log(`[SERVERSTATE MODULE] Coalescing duplicate RCON command for ${key} -> ${command}`);
+        return pending.get(command);
+      }
+
+      console.log(`[SERVERSTATE MODULE] Enqueuing RCON command for ${key} -> ${command}`);
+      const enqueuedAt = Date.now();
+      const next = getRconQueue(key).then(() => {
+        if (pending.get(command) === next) pending.delete(command);
+
+        const waited = Date.now() - enqueuedAt;
+        if (waited > RCON_MAX_QUEUE_WAIT_MS) {
+          console.warn(`[SERVERSTATE MODULE] Dropping stale RCON command for ${key} (waited ${Math.round(waited / 1000)}s) -> ${command}`);
+          return null;
+        }
+        return sendRconCommand(server, command);
+      });
+      if (coalesce) pending.set(command, next);
       // Prevent a failed command from killing the queue for that server
       rconQueues[key] = next.catch(() => {});
       return next;
@@ -264,7 +291,7 @@ module.exports = {
 
       console.log(`[SERVERSTATE MODULE] Received RCON request for ${server.ip}:${server.port} -> ${command}`);
 
-      let responseData = await enqueueRcon(server, command);
+      let responseData = await enqueueRcon(server, command, { coalesce: true });
 
       if (responseData === "") {
         responseData = "No Message";
